@@ -385,6 +385,26 @@ test_citation_check_counts_bare_hashes(){
   assert_grep_str "$out" 'citations_total: 0' "does not mistake a long SHA for citations"
   rm -rf "$root"
 }
+test_citation_check_resolves_session_id_tail(){
+  echo "# citations: a hash that is an omp session UUID tail resolves, not 'unresolved'"
+  local CC="$REPO/bin/citation-check.sh"
+  [ -x "$CC" ] || { no "citation-check executable"; return 0; }
+  command -v jq >/dev/null 2>&1 || { echo "  skip - jq not available"; return 0; }
+  local root; root=$(mktemp -d "${TMPDIR:-/tmp}/ccad.XXXXXX")
+  mkdir -p "$root/f"
+  # An OMP session filename ends in a UUID whose tail is 12 hex characters, so L2 cites
+  # omp sessions by that tail instead of the findings hash — observed on 2026-08-18,
+  # where `87b5b1392572` was the tail of .../2026-08-18T15-43-51-432Z_01a0158b-1488-7000-bf4a-87b5b1392572.jsonl.
+  # That is a real citation to a real triaged session; reporting it as unresolved would
+  # train the reader to ignore the counter.
+  printf '{"session_path":"/s/2026-08-18T15-43-51-432Z_01a0158b-1488-7000-bf4a-87b5b1392572.jsonl","project":"-p","findings":[]}\n' > "$root/f/aaaaaaaaaaaa.json"
+  mk_report "$root/r.md" 87b5b1392572
+  local out; out=$("$CC" "$root/r.md" "$root/f") || no "citation-check exited non-zero"
+  assert_grep_str "$out" 'citations_total: 1'              "counts the citation"
+  assert_grep_str "$out" 'citations_unresolved: 0'         "a session-id tail is not unresolved"
+  assert_grep_str "$out" 'citations_resolved_by_path: 1'   "and it is reported as resolved by session path"
+  rm -rf "$root"
+}
 mk_omp_session_cwd(){ # $1=dir $2=name $3=cwd — an omp session in a project of its own
   mkdir -p "$1"
   local f="$1/$2.jsonl"
@@ -2312,6 +2332,7 @@ test_linearize_then_slim
 test_session_stats_omp
 test_report_only_tool_surface
 test_report_only_leaves_memory_untouched
+test_citation_check_resolves_session_id_tail
 test_facet_fields_plumbed
 test_noise_gate_trivial
 test_noise_gate_short_duration

@@ -63,15 +63,30 @@ hashes=$(sed 's/[^0-9a-f]/ /g' "$report" 2>/dev/null \
          | tr ' ' '\n' \
          | grep -xE '[0-9a-f]{12}' \
          | sort -u)
-total=0; unresolved=0; gated=0
+total=0; unresolved=0; gated=0; by_path=0
 unresolved_list=""; gated_list=""
+
+# Second resolution route. An OMP session filename ends in a UUID whose tail is 12 hex
+# characters, and L2 cites those sessions by that tail rather than by the findings hash
+# (`87b5b1392572` on 2026-08-18, the tail of a real, triaged finances session). Those are
+# genuine citations to genuine sessions, so counting them as unresolved would train the
+# reader to ignore this counter — the exact failure this check exists to avoid. Build the
+# index once: every session_path any findings record claims.
+session_paths="$(jq -r -s '[ .[] | select(type == "object") | .session_path // empty ] | .[]' \
+                   "$fdir"/*.json 2>/dev/null || true)"
 
 for h in $hashes; do
   total=$((total + 1))
   f="$fdir/$h.json"
   if [ ! -s "$f" ]; then
-    unresolved=$((unresolved + 1))
-    unresolved_list="${unresolved_list:+$unresolved_list,}$h"
+    # Not a findings hash. Before calling it unresolved, try the session-id route: a
+    # substring match against the session paths this run actually triaged.
+    if printf '%s\n' "$session_paths" | grep -qF "$h" 2>/dev/null; then
+      by_path=$((by_path + 1))
+    else
+      unresolved=$((unresolved + 1))
+      unresolved_list="${unresolved_list:+$unresolved_list,}$h"
+    fi
     continue
   fi
   # A gated record is the specific failure worth naming: the aggregator cited a session
@@ -94,6 +109,7 @@ done
 printf 'citations_total: %s\n' "$total"
 printf 'citations_unresolved: %s\n' "$unresolved"
 printf 'citations_to_gated: %s\n' "$gated"
+printf 'citations_resolved_by_path: %s\n' "$by_path"
 printf 'citations_unresolved_list: %s\n' "$unresolved_list"
 printf 'citations_to_gated_list: %s\n' "$gated_list"
 exit 0

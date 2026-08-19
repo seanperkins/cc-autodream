@@ -29,7 +29,17 @@ Read the transcript the same way. It has been normalized to the live conversatio
 
 ## Signals that are specific to this harness
 
-Judge these as you would any other finding — evidence quoted, severity honest:
+**Use the existing categories — never invent one.** These are observations to look for, not new category names. The schema's category list is closed, and a coined category (an `eval_state_loss` appeared in the 2026-08-18 run precisely because this section did not say so) splinters the aggregator's grouping and cannot be ranked against history. Map each onto the categories in the main document:
+
+| Observation | File it under |
+|---|---|
+| A tool erroring `not available`, then succeeding later in the same session | `sandbox_friction` |
+| `Blocked: Use the <tool> tool instead`, re-attempted instead of switched | `sandbox_friction`; `tool_loop` if retried ≥3 times |
+| `eval` cells losing globals, or re-importing in every cell | `tool_loop` when it is a repeated cycle; otherwise emit nothing |
+| An advisory obeyed without checking that the transcript then shows was wrong | `sandbox_friction` |
+| A parent redoing a child's work, or children duplicating each other | `missed_skill` when a skill covered it, else `tool_loop` |
+
+Judge them as you would any other finding — evidence quoted, severity honest:
 
 - **Tool-availability churn.** A tool erroring `not available` and later succeeding in the same session is a real friction finding; quote both turns.
 - **Harness redirects treated as failures.** `Blocked: Use the read tool instead` is the harness steering, not a permission denial. Repeatedly re-attempting the blocked form instead of switching tools is the finding.
