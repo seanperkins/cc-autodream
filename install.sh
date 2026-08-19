@@ -70,6 +70,7 @@ link "$REPO_DIR/bin/vault-notes.sh"          "$TARGET/vault-notes.sh"
 link "$REPO_DIR/bin/x-bookmarks.sh"          "$TARGET/x-bookmarks.sh"
 link "$REPO_DIR/bin/root-probe.sh"           "$TARGET/root-probe.sh"
 link "$REPO_DIR/prompts/PROMPT.md"      "$TARGET/PROMPT.md"
+link "$REPO_DIR/prompts/POLICY_OMP.md"  "$TARGET/POLICY_OMP.md"
 link "$REPO_DIR/prompts/SESSION_TRIAGE.md" "$TARGET/SESSION_TRIAGE.md"
 
 chmod +x "$REPO_DIR/bin/"*.sh

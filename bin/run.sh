@@ -663,6 +663,98 @@ compute_overlap_stats() {
   OVERLAP_MEASURED=1
   log "overlap: $OVERLAP_EVENTS pair(s), $SESSIONS_WITH_OVERLAP session(s) involved"
 }
+# ---- Per-source memory boundary ----
+# AUTODREAM_REPORT_ONLY is a whole-run kill switch: it protects project memory by leaving
+# the aggregator no mutating tools, which also stops CLAUDE findings from pinning. For a
+# nightly serving both sources that is the wrong trade — so this is the narrower boundary
+# that lets both run in one pass.
+#
+# Rule: a project whose findings are ALL omp-sourced may not receive a memory pin. Its
+# findings were produced by a taxonomy that is still Claude-shaped (POLICY_OMP.md corrects
+# the worst of it, but the categories, the severity bar and PROMPT.md's pin gate were all
+# written for Claude), and pins are permanent by design — issue #15's memory-write
+# quarantine. A project with any Claude-sourced finding is untouched: Claude work
+# legitimately pins there, and blocking it would be the regression report-only already is.
+#
+# Enforced on the filesystem, after L2 and before GC, never by asking the model. L2 runs
+# with Write/Edit under bypassPermissions and can Glob for memory paths, so an instruction
+# is a request, not a boundary. Snapshot -> compare -> restore is a boundary.
+#
+# Honest limit, documented rather than papered over: a project with BOTH sources can still
+# receive an omp-derived pin, because a pin carries no provenance once written. Report-only
+# remains the hard boundary for a run you do not trust at all; this guard is what makes a
+# mixed nightly safe enough to run every night. Mixed-project pins are the reason
+# PROMPT.md now has to name its evidence.
+MEMORY_REVERTED=0
+MEMGUARD_DIR=""
+
+omp_only_projects() { # findings JSONs -> project names whose every finding is source=omp
+  command -v jq >/dev/null 2>&1 || return 0
+  # A project qualifies only if it has at least one omp finding and zero non-omp ones.
+  # `unknown` (an unstamped record, e.g. no python3) counts as non-omp, so the guard can
+  # never block on an unproven classification.
+  jq -r -s '
+      [ .[] | select(type == "object") | select(.project != null)
+        | {project: .project, src: (.source // "unknown")} ]
+      | group_by(.project)
+      | map(select((map(.src) | all(. == "omp"))) | .[0].project)
+      | .[]
+    ' "$FINDINGS_DIR"/*.json 2>/dev/null | sort -u
+}
+
+memory_paths_for_project() { # project name -> every MEMORY.md path it could own
+  local proj="$1" root
+  local IFS=:
+  for root in $SESSION_ROOTS; do
+    [ -n "$root" ] || continue
+    printf '%s\n' "$root/$proj/memory/MEMORY.md"
+  done
+}
+
+memory_guard_snapshot() {
+  MEMGUARD_DIR="$FINDINGS_DIR/memguard"
+  rm -rf "$MEMGUARD_DIR"; mkdir -p "$MEMGUARD_DIR" 2>/dev/null || return 0
+  local proj mp i=0
+  while IFS= read -r proj; do
+    [ -n "$proj" ] || continue
+    printf '%s\n' "$proj" >> "$MEMGUARD_DIR/projects.txt"
+    while IFS= read -r mp; do
+      i=$((i + 1))
+      printf '%s\n' "$mp" >> "$MEMGUARD_DIR/paths.txt"
+      # Copy the content, not a checksum: restoring needs the bytes. Absence is recorded
+      # by the .absent marker so a file CREATED during L2 is deleted rather than left.
+      if [ -f "$mp" ]; then cp "$mp" "$MEMGUARD_DIR/$i.copy" 2>/dev/null || true
+      else : > "$MEMGUARD_DIR/$i.absent"
+      fi
+    done < <(memory_paths_for_project "$proj")
+  done < <(omp_only_projects)
+  local n; n=$(wc -l < "$MEMGUARD_DIR/projects.txt" 2>/dev/null | tr -d ' ')
+  [ "${n:-0}" -gt 0 ] && log "memory guard: ${n} omp-only project(s) held out of project memory this run"
+  return 0
+}
+
+memory_guard_enforce() {
+  MEMORY_REVERTED=0
+  [ -n "$MEMGUARD_DIR" ] && [ -d "$MEMGUARD_DIR" ] || return 0
+  [ -s "$MEMGUARD_DIR/paths.txt" ] || return 0
+  local mp i=0
+  while IFS= read -r mp; do
+    i=$((i + 1))
+    if [ -f "$MEMGUARD_DIR/$i.absent" ]; then
+      if [ -e "$mp" ]; then
+        rm -f "$mp" && MEMORY_REVERTED=$((MEMORY_REVERTED + 1)) \
+          && log "memory guard: reverted (deleted) $mp — omp-only project, created during L2"
+      fi
+    elif [ -f "$MEMGUARD_DIR/$i.copy" ]; then
+      if ! cmp -s "$MEMGUARD_DIR/$i.copy" "$mp" 2>/dev/null; then
+        cp "$MEMGUARD_DIR/$i.copy" "$mp" && MEMORY_REVERTED=$((MEMORY_REVERTED + 1)) \
+          && log "memory guard: reverted (restored) $mp — omp-only project, modified during L2"
+      fi
+    fi
+  done < "$MEMGUARD_DIR/paths.txt"
+  [ "$MEMORY_REVERTED" -gt 0 ] && log "WARNING: memory guard reverted $MEMORY_REVERTED write(s) to omp-only project memory"
+  return 0
+}
 
 dispatch_l1() { # one parallel pass; idempotent worker → only the still-missing sessions run
   < "$SESSIONS_LIST" xargs -P "$FANOUT" -I {} bash -c '
@@ -753,6 +845,16 @@ dispatch_l1() { # one parallel pass; idempotent worker → only the still-missin
       printf "Session transcript to analyze (literal absolute path): %s\n" "$readpath"
       printf "Write your findings JSON to this literal absolute path: %s\n\n" "$output"
       cat "$AUTODREAM_DIR/SESSION_TRIAGE.md"
+      # Source-aware policy. SESSION_TRIAGE.md is the Claude rubric; applied to an OMP
+      # session it manufactures false positives (four `missed_skill` findings on
+      # 2026-08-18 that the aggregator then spent its top-ranked slot retracting). The
+      # normalized sidecar is the source marker: only OMP sessions have one, and it was
+      # written before dispatch. The Claude prompt is unchanged by design — the ~60% of
+      # the corpus that is Claude cannot regress from this.
+      if [ -s "$FINDINGS_DIR/$hash.norm.jsonl" ] && [ -s "$AUTODREAM_DIR/POLICY_OMP.md" ]; then
+        printf "\n"
+        cat "$AUTODREAM_DIR/POLICY_OMP.md"
+      fi
       if [ -s "$FINDINGS_DIR/$hash.stats.json" ]; then
         printf "\n## Precomputed session stats (authoritative — copy these into your output)\n\n\`\`\`json\n"
         cat "$FINDINGS_DIR/$hash.stats.json"
@@ -1108,8 +1210,19 @@ for path in glob.glob(os.path.join(findings_dir, "*.json")):
                 proj = encoded
         except OSError:
             pass
+    # Source is stamped here, deterministically, for the same reason project is: it must
+    # not depend on the model noticing which harness it read. The normalized sidecar is
+    # the marker — normalize_omp_sessions writes <hash>.norm.jsonl only for OMP sessions,
+    # and the memory guard below keys on this field, so a guess is not acceptable.
+    src = "omp" if os.path.exists(path[: -len(".json")] + ".norm.jsonl") else "claude"
+    changed = False
     if proj and data.get("project") != proj:
         data["project"] = proj
+        changed = True
+    if data.get("source") != src:
+        data["source"] = src
+        changed = True
+    if changed:
         tmp = path + ".tmp"
         with open(tmp, "w") as f:
             json.dump(data, f)
@@ -1117,9 +1230,11 @@ for path in glob.glob(os.path.join(findings_dir, "*.json")):
         fixed += 1
 print(fixed)
 PY
-    log "normalized project field from session path"
+    log "normalized project + source fields from session path"
   else
-    log "python3 not found; skipping project-field normalization (L2 grouping may show dupes)"
+    # Source is what the memory guard keys on, so say plainly that it is missing: with no
+    # source stamps the guard can prove nothing and will not block any project.
+    log "python3 not found; skipping project/source normalization (L2 grouping may show dupes; memory guard cannot classify sources)"
   fi
 
   # ---- Self-audit stats: runtime telemetry only the runner can see ----
@@ -1308,6 +1423,9 @@ PY
   L2_ATTEMPTS="${AUTODREAM_L2_ATTEMPTS:-3}"
   L2_START=$(date +%s)
   L2_RC=1
+  # Snapshot omp-only project memory BEFORE the aggregator can touch it. Cheap: only the
+  # held-out projects are copied, and a Claude-only night copies nothing.
+  memory_guard_snapshot
 
   # ---- Report-only mode: make memory unreachable, not merely discouraged ----
   # L2 normally runs with Write/Edit under bypassPermissions, so it edits project
@@ -1408,6 +1526,16 @@ PY
       log "WARNING: an incomplete report is at $REPORT_PATH and could not be moved aside; later triggers will treat this date as done"
     fi
   fi
+
+  # ---- Enforce the per-source memory boundary ----
+  # Immediately after L2 and BEFORE the GC step below, which rewrites memory files and
+  # would otherwise consolidate around a pin this guard is about to remove. Runs whatever
+  # L2's exit status was: a failed attempt can still have written a pin before dying.
+  # The counter is appended to run-stats.txt unconditionally (0 on a clean run) — an
+  # absent key reads as "this runner predates the guard", which is the signal this repo
+  # has been bitten by twice.
+  memory_guard_enforce
+  printf 'memory_writes_reverted: %s\n' "$MEMORY_REVERTED" >> "$FINDINGS_DIR/run-stats.txt"
 
   # ---- Retire the copies this date no longer needs, and name the ones it keeps ----
   # This has to sit outside the `-f "$REPORT_PATH"` test below. A successful partial move

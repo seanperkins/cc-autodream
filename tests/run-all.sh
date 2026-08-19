@@ -37,6 +37,7 @@ setup_env(){
   mkdir -p "$root/projects/proj-a" "$root/autodream" "$root/dreams" "$root/cap"
   cp "$REPO/prompts/SESSION_TRIAGE.md" "$root/autodream/SESSION_TRIAGE.md"
   cp "$REPO/prompts/PROMPT.md"         "$root/autodream/PROMPT.md"
+  cp "$REPO/prompts/POLICY_OMP.md"     "$root/autodream/POLICY_OMP.md"
   printf '%s' "$root"
 }
 mk_session(){ # $1=root $2=name
@@ -382,6 +383,109 @@ test_citation_check_counts_bare_hashes(){
   } > "$root/sha.md"
   out=$("$CC" "$root/sha.md" "$root/f") || no "citation-check exited non-zero"
   assert_grep_str "$out" 'citations_total: 0' "does not mistake a long SHA for citations"
+  rm -rf "$root"
+}
+mk_omp_session_cwd(){ # $1=dir $2=name $3=cwd — an omp session in a project of its own
+  mkdir -p "$1"
+  local f="$1/$2.jsonl"
+  cat > "$f" <<OMPEOF
+{"type":"title","v":1,"title":"omp fixture","source":"auto"}
+{"type":"session","version":3,"id":"s1","timestamp":"2020-01-02T12:00:00.000Z","cwd":"$3"}
+{"type":"message","id":"e1","parentId":null,"timestamp":"2020-01-02T12:00:01.000Z","message":{"role":"user","attribution":"user","content":[{"type":"text","text":"start the omp task"}]}}
+{"type":"message","id":"e2","parentId":"e1","timestamp":"2020-01-02T12:04:03.000Z","message":{"role":"user","attribution":"user","content":[{"type":"text","text":"keep going"}]}}
+{"type":"message","id":"e3","parentId":"e2","timestamp":"2020-01-02T12:04:04.000Z","message":{"role":"assistant","model":"anthropic/claude-opus-5","content":[{"type":"text","text":"done"},{"type":"toolCall","id":"c1","name":"bash","intent":"Checking","arguments":{"command":"git status"}}]}}
+OMPEOF
+  touch -t "$STAMP" "$f"
+}
+
+# ---- Source-aware L1 policy ----
+# SESSION_TRIAGE.md is the Claude rubric: it names `skill_listing`, `dangerouslyDisableSandbox`,
+# `.claude/settings.json`, and Claude tool spellings. Applied to an OMP session it manufactures
+# false positives — the 2026-08-18 report spent its top-ranked pattern arguing that four
+# `missed_skill` findings were artefacts of exactly this mismatch. OMP sessions therefore get
+# an override fragment appended after the document; the Claude prompt is unchanged, so Claude
+# triage cannot regress.
+test_omp_policy_fragment_appended(){
+  echo "# policy: an omp session gets the omp override, a claude session does not"
+  local root; root=$(setup_env)
+  mk_omp_session_in "$root/omp/-tmp-proj-a" ompsess1
+  export MOCK_CAPTURE_DIR="$root/cap"; FANOUT=1 omp_run "$root"; unset MOCK_CAPTURE_DIR
+  assert_grep "$root/cap/l1-stdin.txt" 'Oh My Pi' "omp worker is told which harness it is reading"
+  # `mnemopi` cannot appear in the Claude rubric, so these prove the fragment arrived
+  # rather than matching wording both documents happen to share.
+  assert_grep "$root/cap/l1-stdin.txt" 'mnemopi' "omp override redirects memory findings to mnemopi"
+  assert_grep "$root/cap/l1-stdin.txt" 'descriptive, not a compliance breach' "omp override neutralizes the Claude marker rule"
+  rm -rf "$root"
+
+  root=$(setup_env)
+  mk_session "$root" claudesess1
+  export MOCK_CAPTURE_DIR="$root/cap"; FANOUT=1 run_dream "$root"; unset MOCK_CAPTURE_DIR
+  assert_nogrep "$root/cap/l1-stdin.txt" 'Oh My Pi' "claude worker never sees the omp override"
+  rm -rf "$root"
+}
+
+test_findings_carry_source(){
+  echo "# policy: run.sh stamps the source into each findings record, not the model"
+  local root; root=$(setup_env)
+  mk_omp_session_in "$root/omp/-tmp-proj-a" ompsess1
+  local sess="$root/omp/-tmp-proj-a/ompsess1.jsonl" h
+  h=$(hash_of "$sess")
+  omp_run "$root"
+  assert_eq "$(jq -r '.source' "$(fdir "$root")/$h.json")" "omp" "an omp finding is stamped source=omp"
+  rm -rf "$root"
+
+  root=$(setup_env)
+  mk_session "$root" claudesess1
+  h=$(hash_of "$root/projects/proj-a/claudesess1.jsonl")
+  run_dream "$root"
+  assert_eq "$(jq -r '.source' "$(fdir "$root")/$h.json")" "claude" "a claude finding is stamped source=claude"
+  rm -rf "$root"
+}
+
+# ---- Memory boundary, per source ----
+# Report-only mode is a whole-run kill switch: it protects memory by making the aggregator
+# unable to write anything, which also stops Claude findings from pinning. That is the wrong
+# trade for a nightly that must serve both sources. The boundary that lets both run is
+# per-project: a project whose findings are ALL omp-sourced cannot receive a memory pin,
+# because the taxonomy that judged it is still Claude-shaped. Enforced on the filesystem
+# after L2 and before GC, never by asking the model.
+test_omp_only_project_memory_reverted(){
+  echo "# memory: a pin written for an omp-only project is reverted, and counted"
+  local root; root=$(setup_env)
+  mk_omp_session_cwd "$root/omp/-tmp-proj-omp" ompsess1 /tmp/proj-omp
+  local mem="$root/projects/-tmp-proj-omp/memory/MEMORY.md"
+  mkdir -p "$(dirname "$mem")"; printf 'existing pin\n' > "$mem"
+  local before; before=$(shasum -a 1 < "$mem")
+  MOCK_MODE=l2_memory_writer MOCK_MEMORY_FILE="$mem" omp_run "$root"
+  assert_eq "$(shasum -a 1 < "$mem")" "$before" "the omp-only project's MEMORY.md is restored"
+  assert_grep "$(fdir "$root")/run-stats.txt" 'memory_writes_reverted: 1' "the revert is counted"
+  assert_grep "$root/run.out" 'reverted' "the run says it reverted a memory write"
+  rm -rf "$root"
+}
+
+test_claude_project_memory_survives(){
+  echo "# memory: a claude-sourced project keeps its pin — the guard is not a blanket block"
+  local root; root=$(setup_env)
+  mk_session "$root" claudesess1
+  # Same project the claude fixture lands in, so the project has claude-sourced findings.
+  local mem="$root/projects/proj-a/memory/MEMORY.md"
+  mkdir -p "$(dirname "$mem")"; printf 'existing pin\n' > "$mem"
+  MOCK_MODE=l2_memory_writer MOCK_MEMORY_FILE="$mem" run_dream "$root"
+  assert_grep "$mem" 'mock pin' "the claude project's pin is kept"
+  assert_grep "$(fdir "$root")/run-stats.txt" 'memory_writes_reverted: 0' "nothing was reverted"
+  rm -rf "$root"
+}
+
+test_memory_guard_deletes_created_file(){
+  echo "# memory: a MEMORY.md CREATED for an omp-only project is removed, not just restored"
+  local root; root=$(setup_env)
+  mk_omp_session_cwd "$root/omp/-tmp-proj-omp" ompsess1 /tmp/proj-omp
+  # No MEMORY.md beforehand: the revert path has nothing to restore and must delete instead,
+  # else the first omp night leaves a permanent pin the guard reported as handled.
+  local mem="$root/projects/-tmp-proj-omp/memory/MEMORY.md"
+  MOCK_MODE=l2_memory_writer MOCK_MEMORY_FILE="$mem" omp_run "$root"
+  assert_no_file "$mem" "the created MEMORY.md is deleted"
+  assert_grep "$(fdir "$root")/run-stats.txt" 'memory_writes_reverted: 1' "the deletion is counted"
   rm -rf "$root"
 }
 omp_run(){ # $1=root — the claude root plus an OMP root, declared as OMP by provenance
@@ -1216,7 +1320,8 @@ test_normalize_project(){
   assert_file   "$fj" "findings JSON written"
   assert_nogrep "$fj" 'WRONG-PROJECT'     "model's wrong project value was overwritten"
   assert_grep   "$fj" '"project": "proj-a"' "project normalized to the session dir basename"
-  assert_grep   "$root/run.out" 'normalized project field' "run log reports normalization"
+  assert_grep   "$root/run.out" 'normalized project' "run log reports normalization"
+  assert_grep   "$fj" '"source": "claude"' "the same pass stamps the source"
   # l1_badproject emits the pre-pilot JSON shape (no facet fields) — the report
   # landing proves L2 still accepts legacy findings.
   assert_file   "$root/dreams/$DATE.md" "L2 completed on facet-free legacy findings"
@@ -2191,6 +2296,11 @@ test_citation_check_counts_bare_hashes
 test_self_audit_stats
 test_self_audit_stats_failure_denominator
 test_self_audit_stats_precached_disambiguation
+test_omp_policy_fragment_appended
+test_findings_carry_source
+test_omp_only_project_memory_reverted
+test_claude_project_memory_survives
+test_memory_guard_deletes_created_file
 test_normalize_project
 test_slim_transcript
 test_omp_session_triaged
