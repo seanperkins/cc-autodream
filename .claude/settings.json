@@ -2,10 +2,8 @@
   "permissions": {
     "allow": [
       "Read(~/Library/LaunchAgents/**)",
-      "Read(/tmp/claude/**)",
-      "Bash(launchctl list:*)",
-      "Bash(launchctl bootstrap:*)",
-      "Bash(launchctl bootout:*)"
+      "Read(//tmp/claude/**)",
+      "Bash(launchctl list:*)"
     ]
   }
 }
