@@ -22,7 +22,7 @@ Then:
 3. **Write the JSON** with the Write tool to the literal output path from line 2 — exactly one JSON object, no prose around it.
 4. Print `done` and exit. No commentary.
 
-When present, a **Precomputed session stats** block follows this document at the end of the prompt. Its `turn_count`, `tool_call_count`, `tools_used`, `models_used`, and `compliance_markers` fields are authoritative: copy them verbatim into the output JSON. Do not derive or recount those fields from the transcript. If the block is absent, derive them from the transcript as before.
+When present, a **Precomputed session stats** block follows this document at the end of the prompt. Its `turn_count`, `tool_call_count`, `tools_used`, `skills_invoked`, `models_used`, and `compliance_markers` fields are authoritative: copy them verbatim into the output JSON. `skills_invoked` is the unique set of skill/command names from actual `Skill` tool-call inputs and user slash-command envelopes (`<command-name>/X</command-name>`), not mentions in prose or available-skill listings. Slash invocation does not require a `Skill` tool call. An invocation is an attempt, not proof of successful completion. Do not derive or recount these fields from the slimmed transcript. If the block or a field is absent, derive the missing fields from the transcript as before.
 
 ## What to look for
 

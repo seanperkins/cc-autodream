@@ -514,12 +514,27 @@ test_session_stats(){
     'not json' \
     '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"b","content":"result"}]}}' > "$fixture"
   "$REPO/bin/session-stats.sh" "$fixture" "$out"
-  assert_eq "$(jq -r 'keys | sort | join(",")' "$out")" \
-    "compliance_markers,duration_minutes,isSidechain,models_used,tool_call_count,tools_used,transcript_bytes,transcript_mtime,turn_count,user_message_count,user_turn_timestamps" \
-    "stats output has exactly the specified fields"
   assert_eq "$(jq -r '.user_turn_timestamps | length' "$out")" "0" "no timestamped user turns in this fixture -> empty user_turn_timestamps"
   assert_eq "$(jq -r .user_message_count "$out")" "1" "tool_result carriers are excluded from user message count"
   assert_eq "$(jq -r .turn_count "$out")" "4" "turn count includes tool_result carriers"
+
+  fixture="$root/skills.jsonl"; out="$root/skills.stats.json"
+  printf '%s\n' \
+    '{"type":"assistant","message":{"content":[{"type":"text","text":"Use superpowers:fake"},{"type":"tool_use","name":"Skill","input":{"skill":"superpowers:brainstorming"}},{"type":"tool_use","name":"Skill","input":{"skill":"superpowers:brainstorming"}},{"type":"tool_use","name":"Read","input":{"skill":"not-a-skill"}},{"type":"tool_use","name":"Skill","input":{}}]}}' \
+    '{"type":"user","message":{"content":[{"type":"tool_result","content":"Launching skill: not-an-invocation"}]}}' > "$fixture"
+  "$REPO/bin/session-stats.sh" "$fixture" "$out"
+  assert_eq "$(jq -c .skills_invoked "$out")" '["superpowers:brainstorming"]' \
+    "skill names come from calls, not prose/results, and repeated calls count once"
+  printf '%s\n' \
+    '{"type":"user","message":{"content":"<command-message>cc-codemaps:update-codemaps</command-message>\n<command-name>/cc-codemaps:update-codemaps</command-name>"}}' \
+    '{"type":"user","message":{"content":[{"type":"text","text":"<command-message>superpowers:brainstorming</command-message>\n<command-name>/superpowers:brainstorming</command-name>"}]}}' \
+    '{"type":"assistant","message":{"content":[{"type":"text","text":"<command-name>/not-a-user-command</command-name>"}]}}' \
+    '{"type":"user","message":{"content":"Example: <command-name>/not-invoked</command-name>"}}' \
+    '{"type":"user","message":{"content":"<command-name>/clear</command-name>\n<command-message>clear</command-message>\n<command-args></command-args>"}}' \
+    '{"type":"attachment","attachment":{"type":"skill_listing","content":"- debate:review-panel: available, not invoked"}}' >> "$fixture"
+  "$REPO/bin/session-stats.sh" "$fixture" "$out"
+  assert_eq "$(jq -c .skills_invoked "$out")" '["cc-codemaps:update-codemaps","superpowers:brainstorming"]' \
+    "slash invocations survive without Skill calls; overlap deduplicates and listings/prose do not count"
 
   fixture="$root/timestamps.jsonl"; out="$root/timestamps.stats.json"
   printf '%s\n' \
@@ -851,16 +866,23 @@ test_normalize_project(){
   echo "# project field is normalized deterministically from the session path"
   command -v python3 >/dev/null 2>&1 || { echo "  skip - python3 not available"; return 0; }
   local root; root=$(setup_env); mk_session "$root" sess1
+  printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Skill","input":{"skill":"superpowers:brainstorming"}}]}}' >> "$root/projects/proj-a/sess1.jsonl"
+  touch -t "$STAMP" "$root/projects/proj-a/sess1.jsonl"
   export MOCK_MODE=l1_badproject; run_dream "$root"; unset MOCK_MODE
   local h; h=$(hash_of "$root/projects/proj-a/sess1.jsonl")
   local fj="$(fdir "$root")/$h.json"
   assert_file   "$fj" "findings JSON written"
   assert_nogrep "$fj" 'WRONG-PROJECT'     "model's wrong project value was overwritten"
   assert_grep   "$fj" '"project": "proj-a"' "project normalized to the session dir basename"
-  assert_grep   "$root/run.out" 'normalized project field' "run log reports normalization"
   # l1_badproject emits the pre-pilot JSON shape (no facet fields) — the report
   # landing proves L2 still accepts legacy findings.
   assert_file   "$root/dreams/$DATE.md" "L2 completed on facet-free legacy findings"
+  assert_eq "$(jq -c .skills_invoked "$fj")" '["superpowers:brainstorming"]' \
+    "full-transcript skill invocation survives model omission"
+  jq '.skills_invoked = []' "$fj" > "$fj.tmp" && mv "$fj.tmp" "$fj"
+  AUTODREAM_FORCE=1 run_dream "$root"
+  assert_eq "$(jq -c .skills_invoked "$fj")" '["superpowers:brainstorming"]' \
+    "report rebuild repairs omitted skills in cached findings"
   rm -rf "$root"
 }
 

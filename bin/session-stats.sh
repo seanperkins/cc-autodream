@@ -108,6 +108,26 @@ jq -R -s \
         | unique
         | sort
       ),
+      skills_invoked: (
+        [
+          $tool_uses[]
+          | select(.name == "Skill")
+          | .input.skill
+          | select(type == "string" and length > 0)
+        ]
+        + [
+          $lines[]
+          | select(.type == "user")
+          | .message.content
+          | if type == "string" then .
+            elif type == "array" then .[] | select(.type == "text") | .text
+            else empty end
+          | select(type == "string")
+          | capture("^<command-message>[^<]+</command-message>\\s*<command-name>/(?<skill>[^<\\s]+)</command-name>")
+          | .skill
+        ]
+        | unique | sort
+      ),
       models_used: ($models | unique | sort),
       duration_minutes: (
         if ($timestamps | length) < 2 then 0

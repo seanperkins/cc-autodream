@@ -936,9 +936,23 @@ for path in glob.glob(os.path.join(findings_dir, "*.json")):
     sp = data.get("session_path")
     if not sp:
         continue
+    changed = False
+    # Skill calls are mechanical facts from the full transcript, not L1 guesses.
+    # Apply on cached findings too so a report rebuild repairs old extraction.
+    try:
+        with open(path[:-5] + ".stats.json") as f:
+            skills = json.load(f).get("skills_invoked")
+        if isinstance(skills, list) and all(isinstance(s, str) for s in skills):
+            if data.get("skills_invoked") != skills:
+                data["skills_invoked"] = skills
+                changed = True
+    except (ValueError, OSError, AttributeError):
+        pass  # Missing/legacy sidecars must not erase previously extracted skills.
     proj = os.path.basename(os.path.dirname(sp))
     if proj and data.get("project") != proj:
         data["project"] = proj
+        changed = True
+    if changed:
         tmp = path + ".tmp"
         with open(tmp, "w") as f:
             json.dump(data, f)
@@ -946,7 +960,7 @@ for path in glob.glob(os.path.join(findings_dir, "*.json")):
         fixed += 1
 print(fixed)
 PY
-    log "normalized project field from session path"
+    log "normalized project and invoked skills from deterministic evidence"
   else
     log "python3 not found; skipping project-field normalization (L2 grouping may show dupes)"
   fi
