@@ -2,7 +2,15 @@
 
 All notable changes to cc-autodream. Format loosely follows Keep a Changelog.
 
+## [Unreleased] — 2026-09-21
+
+### Changed
+- **Memory is proposed, not written.** Layer 2 no longer edits any `MEMORY.md` (auto-memory is disabled on this machine, so those pins were written to a store nothing reads) and the `touched-projects.txt` / `claude-memory gc` step is gone. Findings that clear the high-confidence gate now go into a `## Memory candidates` report section and `findings/<date>/memory-candidates.json`. New `bin/promote.sh [DATE] [--yes] [--dry-run]` shows each candidate after the morning triage and, per answer, stores it in Mnemopi through the `shared-memory call mnemopi_remember` CLI, resolving the bank from the candidate's cwd; promoted ids are logged to `memory-promoted.jsonl` so re-runs skip them. Mnemopi stays the only durable store and only reviewed entries reach it.
+
 ## [Unreleased] — 2026-05-30
+
+### Fixed
+- **Deterministic skill invocation extraction.** Session stats collect unique skill/command names from full-transcript `Skill` tool-call inputs and user slash-command envelopes. The runner reconciles this field into fresh and cached findings before aggregation, preventing slimmed/model-extracted evidence from incorrectly reporting zero invocations. Names represent invocation attempts, not proof of success; prose mentions, available-skill listings, and tool-result text do not count.
 
 ### Added
 - **`review.sh` skips reports with nothing to triage.** Most nights the report has no open questions, and launching a Claude session just to be told "nothing to do" spent a full session's tokens to print one line. `review.sh` now decides that itself and prints the line instead, exiting 0 — same for a report that already carries a `## Triage decisions` section. `PROMPT.md` gained an output contract for it: L2 must end the Open questions section with `<!-- autodream:open-questions=N -->`. Reports written before that marker fall back to a prose check (the "None that clear the triviality gate" shape L2 has used consistently), and anything unrecognised launches the session as before — a wasted session costs tokens, a false skip buries a real question. `--force` bypasses both checks and is carried through into the cmux re-invocation, so forcing a triaged report doesn't open a workspace that instantly exits. The check runs before the cmux branch, so a skip never spawns a workspace just to print to a window that dies. New `tests/review-skip.sh` covers the decision (marker, prose fallback, empty-day stub, unclassifiable, triaged in both bullet and numbered styles, `--force`, latest-report resolution, missing report).

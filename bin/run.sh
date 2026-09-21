@@ -5,7 +5,8 @@
 #   L1: For each of yesterday's session JSONLs, spawn a parallel `claude --model haiku`
 #       running SESSION_TRIAGE.md → writes one findings.json per session.
 #   L2: One `claude --model opus` running PROMPT.md → reads all findings JSONs,
-#       writes $DREAMS_DIR/YYYY-MM-DD.md, updates project MEMORY.md files.
+#       writes $DREAMS_DIR/YYYY-MM-DD.md plus a memory-candidates.json sidecar
+#       (proposals only; bin/promote.sh writes accepted ones to Mnemopi).
 #
 # Usage:
 #   ./run.sh             # process yesterday
@@ -1152,7 +1153,7 @@ PY
         --disable-slash-commands \
         --strict-mcp-config \
         --settings '{"disableAllHooks":true}' \
-        --append-system-prompt "Headless aggregator. Read the per-session findings JSONs from the findings directory given on line 1 of the prompt, then write the report, via the Write tool, to the literal report path given on line 2. Those paths are literal strings, not shell variables — never \$-expand them. May edit project MEMORY.md files per the prompt rules. Print report path and 3-line summary, then exit."
+        --append-system-prompt "Headless aggregator. Read the per-session findings JSONs from the findings directory given on line 1 of the prompt, then write the report, via the Write tool, to the literal report path given on line 2. Those paths are literal strings, not shell variables — never \$-expand them. The only files you write are the report and memory-candidates.json in the findings directory; never edit MEMORY.md or any project file. Print report path and 3-line summary, then exit."
     )
 
     L2_RC=$?
@@ -1282,32 +1283,15 @@ PY
       fi
     fi
 
-    # ---- Symbiotic GC: trigger cc-simple-memory to consolidate
-    #      around the pins Layer 2 just added (no-op if not installed
-    #      or AUTODREAM_GC=0). Iterates the touched-projects sidecar
-    #      Layer 2 wrote — re-uses the cwd recorded in each project's
-    #      session JSONLs to give claude-memory the right project root.
-    if [ "${AUTODREAM_GC:-1}" != "0" ] && command -v claude-memory >/dev/null 2>&1; then
-      TOUCHED="$FINDINGS_DIR/touched-projects.txt"
-      if [ -s "$TOUCHED" ]; then
-        log "claude-memory detected; running GC for $(wc -l < "$TOUCHED" | tr -d ' ') touched project(s)..."
-        sort -u "$TOUCHED" | while IFS= read -r encoded; do
-          [ -z "$encoded" ] && continue
-          proj="$PROJECTS_DIR/$encoded"
-          [ -d "$proj" ] || { log "  skip: $encoded (no project dir)"; continue; }
-
-          cwd=$(grep -hom1 '"cwd":"[^"]*"' "$proj"/*.jsonl 2>/dev/null \
-                 | head -1 | sed 's/^"cwd":"//;s/"$//')
-          if [ -z "$cwd" ] || [ ! -d "$cwd" ]; then
-            log "  skip: $encoded (cwd not resolvable)"
-            continue
-          fi
-          log "  gc: $cwd"
-          ( cd "$cwd" && claude-memory gc ) >> "$RUN_LOG" 2>&1 \
-            || log "    gc failed for $cwd (continuing)"
-        done
+    # ---- Memory candidates: L2 proposes, the human promotes. Nothing is
+    #      written to any memory store here; bin/promote.sh <date> reads the
+    #      sidecar after triage and writes accepted entries to Mnemopi.
+    CANDIDATES="$FINDINGS_DIR/memory-candidates.json"
+    if [ -s "$CANDIDATES" ]; then
+      if n=$(jq -e 'if type=="array" then length else empty end' "$CANDIDATES" 2>/dev/null); then
+        log "$n memory candidate(s) proposed; promote with: bin/promote.sh $TARGET_DATE"
       else
-        log "claude-memory installed but no project memory was touched; skipping per-project GC"
+        log "WARNING: $CANDIDATES is not a JSON array; promote.sh will refuse it"
       fi
     fi
   else

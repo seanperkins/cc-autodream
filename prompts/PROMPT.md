@@ -18,7 +18,7 @@ All other inputs you need (treat `<findings-dir>` below as the literal path from
 - **Per-session findings JSONs**: every file matching `<findings-dir>/*.json` except `*.stats.json` (Glob it) is one session's structured output (schema in `SESSION_TRIAGE.md`). Read them all.
 - **Per-session stderr**: `<findings-dir>/*.json.err` if a triage call failed — note in your report.
 - **Installed skills**: walk `~/.claude/skills/`, `~/.claude/plugins/*/skills/`, and project `.claude/skills/`. Each has frontmatter `description`/triggers. Use this to validate `missed_skill` findings (skill exists? trigger matches?).
-- **Memory files**: `~/.claude/projects/*/memory/MEMORY.md` (one per project — may not exist).
+- **Memory**: Mnemopi is the authoritative memory store and you cannot query it (no shell). Do not read or write `~/.claude/projects/*/memory/MEMORY.md`: auto-memory is disabled on this machine, so those files are stale and nothing loads them. Prior decisions live in the three most recent reports' `## Triage decisions` sections.
 - **Global rules**: `~/.claude/CLAUDE.md`, `~/.claude/rules/*.md`, and the lazy-loaded
   playbooks in `~/.claude/docs/guardrails/*.md` (dev-workflow, advisor-mode,
   failure-discipline, pr-workflow, claude-code-lore). The guardrails moved out of `rules/`
@@ -136,7 +136,7 @@ Anything ambiguous that needs a human call before being acted on. Group by topic
 **Triviality gate — every open question must clear all three before it ships. Drop the ones that don't; a report with two grounded questions beats one with six unverified ones:**
 1. **Premise verified.** If the question rests on a factual claim about how something works ("the workers run SessionStart hooks", "path X isn't allowlisted"), read the file that settles it and confirm the claim is true. A question built on an unread assumption is a hallucination — cut it. Do not infer worker/runner behavior from the report's own prose; read `bin/run.sh` and the actual config.
 2. **Not already done.** If the ask is "create/add/enable X", verify X doesn't already exist (skills → list the skills dir; settings → read `settings.json`; hooks → read the hook). If it exists, it's not an open question.
-3. **Not already settled.** Before surfacing a recurring policy question, check whether the user already ruled on it: scan the three most recent prior reports' `## Triage decisions` sections (`~/.claude/dreams/*.md`) and the relevant project's `MEMORY.md` for a `type: feedback` entry or moratorium covering it. If the user already decided, do not re-ask — note it as "settled <date>, see <ref>" in per-project notes at most, or omit entirely. The ASSUMPTIONS-block trigger is under a standing moratorium (settled 2026-07-03); never surface it as an open question.
+3. **Not already settled.** Before surfacing a recurring policy question, check whether the user already ruled on it: scan the three most recent prior reports' `## Triage decisions` and `## Memory candidates` sections (`~/.claude/dreams/*.md`) for a decision or moratorium covering it. If the user already decided, do not re-ask — note it as "settled <date>, see <ref>" in per-project notes at most, or omit entirely. The ASSUMPTIONS-block trigger is under a standing moratorium (settled 2026-07-03); never surface it as an open question.
 
 An open question that would take the user ten seconds to answer with "that already exists" or "we settled this last week" is a triage failure, not a question.
 
@@ -145,27 +145,28 @@ An open question that would take the user ten seconds to answer with "that alrea
 `<!-- autodream:open-questions=N -->`
 
 N is how many questions survived the triviality gate above. Count the questions you are actually asking the user to decide, not the notes you kept for context: a section that says "None that clear the triviality gate" followed by three explanatory bullets is `N=0`, because none of those bullets is a question. `review.sh` reads this marker to decide whether the morning triage session is worth opening at all, so an inflated N costs a pointless session and a deflated N silently buries a real question.
+
+## Memory candidates
+Proposals only (see "Memory candidates" below for the gate and the sidecar file). Numbered items, or `None.`
 ```
 
-### 2. Memory updates (high-confidence only)
+### 2. Memory candidates (high-confidence only, never written automatically)
 
-For findings with `confidence: high` AND `count >= 2` AND `severity: high`, you MAY edit the relevant project's `MEMORY.md`:
+For findings with `confidence: high` AND `count >= 2` AND `severity: high`, you propose a memory candidate (format below). Nothing else qualifies.
 
 **Pilot quarantine — LIFTED for `buggy_code_shipped` on 2026-07-28.** Its pilot week ran 2026-07-20…07-27: 28 sessions emitted the category and none was dropped as a false positive, so it is now eligible for the normal memory-write gate above like any other category. (The one date that looked like a mass discard was a single code-review fanout, `wf_e1571958-08b`, which L2 correctly collapsed into one aggregate pattern rather than 9 separate ones.)
 
 **`instructions_given` — the repetition-ranking rule is RETIRED (2026-07-28); the compliance check stays.** Over the pilot week not one cross-session repetition became a memory candidate, and the reason is structural rather than bad luck: what people actually repeat is session scoping ("do not commit", "stay on this branch", "work in this worktree", "read-only investigation"). Those recur constantly and are correctly un-pinnable — a permanent 📌 saying "do not commit" would be actively wrong. So do NOT enter repeated instructions in Top patterns as memory candidates, and do not rank by repetition count.
 
-Still read the field, for the one thing it proved good at: **compliance detection.** When a session was given an explicit instruction and the transcript shows it wasn't followed, that is a `compliance_failure` — report it as such, citing the instruction. This is the routing that surfaced "`verify-spec-against-code` not invoked by verifier subagents despite an explicit brief instruction", and it only works because the field records what was asked. The field is also legitimate colour for Per-project notes. If an instruction is already recorded in the relevant `MEMORY.md` or `~/.claude/CLAUDE.md` and was ignored, that is likewise a `compliance_failure`, not a memory candidate.
+Still read the field, for the one thing it proved good at: **compliance detection.** When a session was given an explicit instruction and the transcript shows it wasn't followed, that is a `compliance_failure` — report it as such, citing the instruction. This is the routing that surfaced "`verify-spec-against-code` not invoked by verifier subagents despite an explicit brief instruction", and it only works because the field records what was asked. The field is also legitimate colour for Per-project notes. If an instruction is already recorded in `~/.claude/CLAUDE.md` or a prior report's decisions and was ignored, that is likewise a `compliance_failure`, not a memory candidate.
 
-- Project memory paths follow `~/.claude/projects/<encoded-cwd>/memory/MEMORY.md`.
-- The encoded-cwd comes from `session.project` in the JSON or by inspecting the session path.
-- **Always 📌-pin any entry you add.** A separate memory-consolidation pass (Claude Code's built-in auto-dream, or the `cc-simple-memory` plugin's `gc-memory.sh`) prunes non-pinned entries on a different schedule — the 📌 marker is the contract that keeps cc-autodream's signal from being garbage-collected before the human sees it.
-- **Never delete or rewrite an existing 📌 entry** unless you are explicitly replacing a stale autodream pin with a newer one on the same topic. Memory hygiene (consolidation, pruning, contradiction resolution) is the consolidator's job, not ours.
-- Keep each file ≤200 lines AND ≤25,000 bytes — these are the same caps Anthropic's auto-dream enforces (`MAX_ENTRYPOINT_LINES = 200`, `MAX_ENTRYPOINT_BYTES = 25_000` in `src/memdir/memdir.ts`). If you'd overflow, remove the oldest *non-pinned* entry only.
-- Each MEMORY.md line is an **index entry**, not a full memory body. Hold it under ~150 characters: one-line pointer that can include a markdown link to a topic file. (claude-dream and Anthropic's auto-dream both groom on this contract — staying within it makes your pins survive their passes.)
-- When you write a longer-form memory body, put it in a topic file alongside MEMORY.md with frontmatter `type: feedback` (or `project` / `reference` where applicable — match Anthropic's four-type taxonomy: `user`, `feedback`, `project`, `reference`). cc-autodream's signal almost always maps to `type: feedback`.
-- Record EVERY edit in the report's "Auto-applied: yes" lines. Before writing "Auto-applied: yes", Read the edited file back and confirm the change is on disk. Never claim an edit you have not verified, and never reference a topic file or `[[pin]]` you did not just write or confirm exists — a past report cited a pin that was never written.
-- **Sidecar for the GC step**: every time you write to a project's `MEMORY.md`, append the project's encoded directory name (the `<encoded-cwd>` segment of the path) as a new line in a `touched-projects.txt` file inside the findings directory (the literal path from line 1). The runner reads this file after you exit and triggers `claude-memory gc` for each listed project so the consolidator can resettle around your new pins. If you didn't touch any project memory, don't create the file.
+**You never write memory.** Mnemopi is the only durable store, it takes reviewed decisions only, and you have no shell to reach it. Your output for a finding that clears the gate is a *candidate*, in two places, both mandatory:
+
+1. A `## Memory candidates` section in the report (after Open questions), one numbered item per candidate:
+   `1. **<project cwd>** — <one sentence, under 300 characters, present tense, the thing a future session must know> (evidence: <session ids or file:line>)`. Write `None.` when nothing clears the gate.
+2. `<findings-dir>/memory-candidates.json` (the literal findings path from line 1), a JSON array of objects `{"cwd": "<absolute project path>", "content": "<the same sentence>", "kind": "project_note"|"preference"|"correction", "evidence": ["…"]}`. Resolve `cwd` from the session's recorded working directory in the findings JSON; if you cannot resolve it, omit the candidate rather than guess. Do not create the file when the list is empty.
+
+The user promotes accepted candidates with `bin/promote.sh <date>` after the morning triage. A candidate is a proposal, so never phrase it as already remembered, and never reference it from another section as if it were stored.
 
 ### 3. Anything you may NOT edit
 
@@ -181,8 +182,8 @@ Still read the field, for the one thing it proved good at: **compliance detectio
 3. Walk installed skills (Glob `~/.claude/skills/*/SKILL.md` etc., Read frontmatter).
 4. Read `<findings-dir>/changelog-window.md` (Upstream changes) and `<findings-dir>/run-stats.txt` (Autodream self-audit) if present.
 5. Write the report to the literal report path from line 2.
-6. For each high-confidence high-severity recurring finding, update the matching project's MEMORY.md.
-7. Print: `report: <report-path>` (the literal path from line 2) then a 3-line summary (sessions reviewed, findings, edits made), then exit.
+6. For each high-confidence high-severity recurring finding, add a memory candidate to the report section and to `<findings-dir>/memory-candidates.json` (see Memory candidates). Write nothing else outside the report path.
+7. Print: `report: <report-path>` (the literal path from line 2) then a 3-line summary (sessions reviewed, findings, memory candidates), then exit.
 
 ## Style
 

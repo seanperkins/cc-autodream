@@ -14,13 +14,14 @@ fresh and rediscovers the same friction.
 cc-autodream does the rereading for you. Every night it looks across **all** of
 yesterday's sessions, ranks what recurs by frequency × severity (so you see the
 patterns, not the one-offs), and writes a dated digest you can skim in a minute. The
-highest-confidence, highest-severity findings get pinned into the relevant project's
-`MEMORY.md`, so the next session already knows.
+highest-confidence, highest-severity findings become *memory candidates*; after the
+morning triage, `bin/promote.sh <date>` writes the ones you accept to your durable memory
+store (Mnemopi), so the next session already knows. Nothing is remembered without a human
+looking at it first.
 
 This is the cross-session view the built-in per-project auto-memory doesn't give you.
-Anthropic's built-in auto-dream is a memory *janitor* — it grooms your `MEMORY.md`.
 cc-autodream is a *signal extractor* — it reads full transcripts and tells you what
-happened. They compose: cc-autodream adds the 📌 pins, the janitor grooms around them.
+happened; the memory store stays authoritative and reviewed.
 
 ## What you get
 
@@ -224,8 +225,8 @@ lean-query pattern, and the "don't eat your own tail" self-pollution defenses �
   is portable; the scheduling and notify bits are mac-specific. The morning
   open-questions file opens with your default `.md` app; set `AUTODREAM_OPEN`
   (e.g. `subl`, `code -g`, `open -a Obsidian`) to pick a specific editor.
-- Runs in `bypassPermissions` mode (workers Write findings; the aggregator Edits
-  project `MEMORY.md`). Don't run it in a shared environment.
+- Runs in `bypassPermissions` mode (workers Write findings; the aggregator writes the
+  report and the candidates sidecar). Don't run it in a shared environment.
 - The first run clones `anthropics/claude-code` (small) for the changelog window; it
   degrades gracefully with no git/network.
 

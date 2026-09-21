@@ -4,10 +4,10 @@ Operating notes for working on this repo. Read this before changing `bin/run.sh`
 
 ## What it is
 
-A nightly two-layer pipeline that reads yesterday's Claude Code session transcripts and produces a ranked daily report plus a few pinned MEMORY.md entries.
+A nightly two-layer pipeline that reads yesterday's Claude Code session transcripts and produces a ranked daily report plus a short list of memory candidates for the human to promote.
 
 - **Layer 1** (`prompts/SESSION_TRIAGE.md`, haiku, fanned out one per session): reads one transcript, writes one findings JSON.
-- **Layer 2** (`prompts/PROMPT.md`, opus, single call): reads all findings JSONs, writes `dreams/YYYY-MM-DD.md`, optionally pins to project MEMORY.md.
+- **Layer 2** (`prompts/PROMPT.md`, opus, single call): reads all findings JSONs, writes `dreams/YYYY-MM-DD.md` and `findings/YYYY-MM-DD/memory-candidates.json`. It never writes memory: Mnemopi is the only store, it takes reviewed entries only, and `bin/promote.sh <date>` is the step that writes them after triage.
 - `bin/run.sh` orchestrates both layers and everything around them.
 
 ## Session roots: one dir is not the corpus
@@ -55,7 +55,7 @@ All under `$AUTODREAM_DIR` (default `~/.claude/autodream/`) except the reports:
 - `findings/YYYY-MM-DD/run-stats.txt` — self-audit telemetry the aggregator reads.
 - `findings/YYYY-MM-DD/operator-notes.md` — every capture surface's notes merged into the one file L2 reads. `vault-notes-manifest.txt` alongside it lists the inbox files that went into it.
 - `findings/YYYY-MM-DD/x-bookmarks.md` — unread X bookmarks for the "Ideas from bookmarks" section, plus `x-bookmarks-manifest.txt` of their ids. `x-bookmarks/seen.jsonl` holds the persistent read state.
-- `findings/YYYY-MM-DD/touched-projects.txt` — sidecar listing projects whose MEMORY.md L2 edited (drives the optional `claude-memory gc`).
+- `findings/YYYY-MM-DD/memory-candidates.json` — L2's proposed memories (`cwd`, `content`, `kind`, `evidence`); `bin/promote.sh` reads it. The old `touched-projects.txt` / `claude-memory gc` path is gone.
 - `findings/YYYY-MM-DD/unindexed-roots.txt` — Claude folders (`~/.claude*/projects`) that exist but are not indexed, for the self-audit section. Written before the idempotency guard so a catch-up no-op still reports folders that appeared since setup.
 - `root-choices.conf` — the per-folder index decision (`~/.claude-ds4/projects=index`), written by `bin/root-probe.sh` at install time. The primary `~/.claude/projects` is always indexed.
 - `cache/claude-code/` — persistent clone of `anthropics/claude-code` for the changelog.
