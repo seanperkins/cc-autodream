@@ -7,8 +7,12 @@ Operating notes for working on this repo. Read this before changing `bin/run.sh`
 A nightly two-layer pipeline that reads yesterday's Claude Code session transcripts and produces a ranked daily report plus a short list of memory candidates for the human to promote.
 
 - **Layer 1** (`prompts/SESSION_TRIAGE.md`, haiku, fanned out one per session): reads one transcript, writes one findings JSON.
-- **Layer 2** (`prompts/PROMPT.md`, opus, single call): reads all findings JSONs, writes `dreams/YYYY-MM-DD.md` and `findings/YYYY-MM-DD/memory-candidates.json`. It never writes memory: Mnemopi is the only store, it takes reviewed entries only, and `bin/promote.sh <date>` is the step that writes them after triage.
+- **Layer 2** (`prompts/PROMPT.md`, `claude-opus-4-7` unless `AUTODREAM_L2_MODEL` overrides it, single call): reads all findings JSONs, writes `dreams/YYYY-MM-DD.md` and `findings/YYYY-MM-DD/memory-candidates.json`. It never writes memory: Mnemopi is the only store, it takes reviewed entries only, and `bin/promote.sh <date>` is the step that writes them after triage.
 - `bin/run.sh` orchestrates both layers and everything around them.
+
+Legacy `MEMORY.md` memory is retired on this host: autodream never reads or writes it and never runs `claude-memory gc`. The upstream automatic pin applier is not shipped or installed; `bin/promote.sh` remains the only memory writer. Prior reports' `## Triage decisions` are settled context; their candidates are not decisions.
+
+`bin/overlap-stats.sh` is intentionally absent from `shared-with-sibling.txt`: OMP excludes advisor sidecars using its `is_advisor` field, while Claude's overlap pass has no matching advisor session type. Keep each harness's existing treatment; do not port advisor semantics merely to satisfy the shared-code drift check.
 
 ## Session roots: one dir is not the corpus
 
@@ -55,7 +59,8 @@ All under `$AUTODREAM_DIR` (default `~/.claude/autodream/`) except the reports:
 - `findings/YYYY-MM-DD/run-stats.txt` — self-audit telemetry the aggregator reads.
 - `findings/YYYY-MM-DD/operator-notes.md` — every capture surface's notes merged into the one file L2 reads. `vault-notes-manifest.txt` alongside it lists the inbox files that went into it.
 - `findings/YYYY-MM-DD/x-bookmarks.md` — unread X bookmarks for the "Ideas from bookmarks" section, plus `x-bookmarks-manifest.txt` of their ids. `x-bookmarks/seen.jsonl` holds the persistent read state.
-- `findings/YYYY-MM-DD/memory-candidates.json` — L2's proposed memories (`cwd`, `content`, `kind`, `evidence`); `bin/promote.sh` reads it. The old `touched-projects.txt` / `claude-memory gc` path is gone.
+- `findings/YYYY-MM-DD/memory-candidates.json` — L2's proposed memories (`cwd`, `content`, `kind`, `evidence`); `bin/promote.sh` reads it. L2 writes this before the report, including `[]` when none qualify. Before each attempt, the runner preserves an earlier sidecar at `memory-candidates.json.stale-XXXXXX`; a failed move stops L2 rather than pairing stale proposals with a new report.
+- `findings/YYYY-MM-DD/memory-promoted.jsonl` — the manual promotion ledger; the nightly never writes this file.
 - `findings/YYYY-MM-DD/unindexed-roots.txt` — Claude folders (`~/.claude*/projects`) that exist but are not indexed, for the self-audit section. Written before the idempotency guard so a catch-up no-op still reports folders that appeared since setup.
 - `root-choices.conf` — the per-folder index decision (`~/.claude-ds4/projects=index`), written by `bin/root-probe.sh` at install time. The primary `~/.claude/projects` is always indexed.
 - `cache/claude-code/` — persistent clone of `anthropics/claude-code` for the changelog.
@@ -97,7 +102,7 @@ The predicate is anchored to the FIRST user message so a human session that mere
 `--no-session-persistence` suppresses the full transcript but NOT Claude Code's **AI-title generation**: a fire-and-forget background call that writes a one-line `{"type":"ai-title",...}` stub into the launch cwd's project bucket. Because workers ran from `cd "$HOME"`, those stubs landed in the real `-Users-<you>` bucket and polluted session history / `search-sessions` — 339 of them accumulated 2026-05-25…06-02 (titles like "Analyze Claude session findings", "Aggregate daily findings into report"). Whether a stub lands is version/timing-dependent (the `--print` process sometimes exits before the async write flushes — current builds often drop it, older ones flushed it), so the fix must not assume the binary's current behavior.
 
 Two defenses:
-1. **cwd isolation + wipe (run.sh)**: both layers now launch from `$AUTODREAM_DIR/work` (`WORK_DIR`), not `$HOME`. Claude maps cwd → `~/.claude/projects/<cwd with / and . → ->`, so any stub lands in the isolated `WORK_BUCKET` instead of the real bucket. `clean_work_bucket` (`rm -rf "$WORK_BUCKET"`) runs before L1 and after L2, so stubs never accumulate. Workers read/write only by absolute path, so cwd is functionally irrelevant — L1 cd's inside the worker subshell; L2 cd's inside a subshell so the change does not leak into the notify/GC steps. **Watch the apostrophes**: the L1 worker body is a single-quoted `bash -c '...'`, so a `'` in a comment there silently breaks quoting (it still passes `bash -n`).
+1. **cwd isolation + wipe (run.sh)**: both layers now launch from `$AUTODREAM_DIR/work` (`WORK_DIR`), not `$HOME`. Claude maps cwd → `~/.claude/projects/<cwd with / and . → ->`, so any stub lands in the isolated `WORK_BUCKET` instead of the real bucket. `clean_work_bucket` (`rm -rf "$WORK_BUCKET"`) runs before L1 and after L2, so stubs never accumulate. Workers read/write only by absolute path, so cwd is functionally irrelevant — L1 cd's inside the worker subshell; L2 cd's inside a subshell so the change does not leak into the notify/pin steps. **Watch the apostrophes**: the L1 worker body is a single-quoted `bash -c '...'`, so a `'` in a comment there silently breaks quoting (it still passes `bash -n`).
 2. **Pruner title predicate (`is_self_title`)**: catches orphan stubs in the real bucket left by runs predating defense 1. Gated on (a) NO user turn anywhere in the file — a real session keeps its title alongside its conversation turns, so it is never a title-only orphan and is never matched — AND (b) the title paraphrases our L1/L2 prompts (session triage → findings, aggregate findings → report). Tuned against the real backlog: spares terminal-tab-title stubs and unrelated headless orphans (e.g. "GCU Rush firmware development").
 
 ## Sleep resilience
@@ -170,6 +175,7 @@ Each of these passed a smoke test and failed in a way that produced no error:
 - **An iCloud-evicted file is not a zero-byte file.** macOS replaces it outright with a dot-prefixed `.<name>.icloud` placeholder, so a `-name '*.md'` walk matches *nothing* and the unreadable-note branch was unreachable for the only case it existed for. Placeholders get their own pass and are never manifested, so the note stays in the inbox to retry.
 - **Sourcing a user-edited config under `set -u` kills the shell.** Not the source — the shell, so `|| echo WARNING` cannot fire. `run.sh` now probes the config in a throwaway subshell purely to capture bash's own error naming the bad variable, then sources for real with nounset off. Both helper scripts need the same guard; fixing only `run.sh` left them dying instead.
 - **`mv` across filesystems is a copy, not a rename.** State staged in `$TMPDIR` and moved onto `$STATE_DIR` was never the atomic swap its comment claimed. Stage in the destination directory and gate the `mv` on the staging copy having succeeded.
+- **State that has to change together goes in one file, written with one rename.** Two files cannot be updated atomically, so every write order leaves a failure point between them. `question-streaks.sh` kept its watermark in a second file, and three Codex rounds on omp-autodream PR #25 in a row each found a new order in which the two disagreed. Moving the watermark into the state file's first line ended it (see "Open questions that never get answered"). When a fix starts choosing which of two files to write first, merge the files instead.
 
 ## X bookmarks as idea fuel
 
@@ -252,7 +258,9 @@ public. For private code, swap the seat rather than skipping the pass.
 
 ## Tests
 
-`tests/run-all.sh` drives the real `run.sh` against `tests/mock-claude.sh` (no network, no model). Mock modes: `good` (default), `l1_incomplete` (worker writes nothing), `l1_flaky` (fails first dispatch per session, succeeds on retry). The suite forces `AUTODREAM_NETCHECK=0 AUTODREAM_RETRY_WAIT=0` and a low `AUTODREAM_L1_ROUNDS` so it never sleeps or hits the network. macOS only (BSD `date`/`touch`). Run it after any run.sh/prompt change.
+`tests/run-all.sh` drives the real `run.sh` against `tests/mock-claude.sh` (no network, no model). It also runs `lib-project`, `preflight`, `adapters`, `adapter-claude`, `adapter-contract`, `slim-transcript`, and `promote` unit suites. Retry waits and network checks are disabled; macOS is required for BSD `date`/`touch`. Run it after runner or prompt changes; the workflow separately runs the cookie-cadence, review-skip and x-bookmarks suites.
+
+`tests/promote.sh` covers the explicitly approved manual promotion path with a fake shared-memory CLI. The runner's memory tests verify that candidates and even a legacy `pins.jsonl` never trigger a store call, and that reruns do not present stale candidates. Upstream's automatic `apply-pins.sh` and its writer-specific tests are superseded by this reviewed-only policy.
 
 The suite pins `AUTODREAM_CONFIG` into its sandbox now that `run.sh` sources the config. Without that pin, a developer whose real config points `AUTODREAM_VAULT_DIR` at a live Obsidian vault would have the test suite writing notes and reports into it. `MOCK_MODE=l2_fail` makes the aggregator write nothing and exit 1, which is how the "don't archive an unread note" guard is tested; pair it with `AUTODREAM_L2_ATTEMPTS=1` so the test doesn't sit through the retry loop.
 
@@ -262,9 +270,131 @@ The suite pins `AUTODREAM_CONFIG` into its sandbox now that `run.sh` sources the
 
 `tests/review-skip.sh` covers `bin/review.sh`'s skip/launch decision against fixture reports, with an inline mock claude that just touches a marker file — if the marker exists, review.sh reached `exec claude`. It pins `AUTODREAM_CONFIG` to a nonexistent path so the host's own config (`AUTODREAM_TRIAGE_SURFACE=cmux`) can't leak in and spawn a real workspace mid-test. Run it after any review.sh change, and after changing PROMPT.md's Open-questions marker contract.
 
+## The sibling repo, and the fix that lands in only one of them
+
+This repo has a twin: **omp-autodream**, the OMP port. Both are checked out on this host
+and **both installs run nightly** — `~/.claude/autodream` off this repo,
+`~/.omp/agent/autodream` off that one. Most of the code has genuinely diverged; measured
+2026-09-15 with comments stripped, `run.sh` differs by 1009 code lines, `review.sh` by 93,
+`session-stats.sh` by 70. Those are a port, not a copy, and they should differ.
+
+Five helpers are byte-identical by intent, and they are listed in
+`shared-with-sibling.txt`:
+
+```
+bin/cookie-cadence.sh   bin/make-notifier.sh   bin/overlap-stats.sh   bin/x-bookmarks.sh
+bin/question-streaks.sh
+```
+
+A fix to any of those is half a fix until it lands in both. That is not hypothetical. On
+2026-09-11 the X bookmarks queryId walk was fixed in omp-autodream after X moved to
+16-character webpack chunk hashes; the identical file here was never touched. This
+install kept failing every night, its reports said `x_queryid_source: failed` ten nights
+running and raised it as an open question six times, and it took the user noticing that
+the other repo's reports had gone quiet. **Both repos' test suites passed the entire
+time**, because each was internally consistent — which is precisely why no in-repo test
+could ever have caught it.
+
+`bin/check-shared-drift.sh` now compares those files against the sibling checkout and
+`tests/run-all.sh` runs it last. It strips FULL-LINE comments before comparing, so each repo can
+date its own incident notes in a comment block. An inline trailing comment is not
+stripped and does count as drift — `sed` cannot tell a `#` in a comment from one in a
+string or a regex, and for files meant to be identical "port the comment too" is the
+right answer anyway. It finds the sibling by the name of the main checkout, not the
+current directory, so a git worktree such as `cc-autodream-port71` still resolves
+`../omp-autodream` (a name-based guess exited 2 and failed the whole suite in every
+worktree). A shared file it cannot read counts as drift, not a match. With no sibling on
+disk, or a checkout name it does not recognise, it prints SKIPPED and
+exits 0 **loudly**, naming the path it looked for — the same rule as `overlap_measured`
+and `stats_sidecars_unparseable`: a degraded measurement says so rather than reading as a
+pass. It is verified by re-introducing the real regression, not by a fixture.
+
+The habit that generalizes: **a review finding is a class, not a site.** Before fixing
+anything under `bin/`, check whether the sibling ships the same file. One `grep` on
+2026-09-11 would have saved four failing nights here.
+
+## Open questions that never get answered
+
+The nightly asks; nothing makes it louder when the asking stops working. Between
+2026-09-05 and 09-14 the X bookmarks walk was broken, every report said
+`x_queryid_source: failed`, and the Open questions section asked "Fix the X bookmarks
+walker, or turn the feature off?" six times. Ten nights, six asks, one banner a night that
+looked exactly like the night before. Nothing moved until the user noticed the *other*
+install's reports had gone quiet.
+
+Detection was never the problem. **A signal that repeats at constant volume is a signal you
+learn to skim.**
+
+`bin/question-streaks.sh` counts the repeats and makes the Nth ask look different from the
+first. `run.sh` calls it right after `notify.sh`, so the normal banner still goes out every
+night and a second, differently-worded one fires only for questions that have gone stale.
+Escalations also land in `findings/<date>/question-escalations.txt`.
+
+Four decisions in it are load-bearing:
+
+- **A question is keyed by its bolded title, exactly.** Verified against five consecutive
+  reports (2026-09-10..14): the body prose is rewritten nightly, but the title is
+  BYTE-identical across all of them. So no fuzzy scoring is needed, and heavier
+  normalization would risk collapsing two genuinely different questions onto one key and
+  silently merging their streaks.
+- **The count is mechanical, not the model's.** L2 already writes "Sixth ask" into its own
+  prose, but that is the model counting its own history out of context — exactly the kind
+  of number that drifts. This one is derived from the reports on disk.
+- **A streak counts consecutive REPORTS, not calendar days.** A night that produced no
+  report must not reset one; surviving the failing nights is the entire point. A question
+  absent from a report that *was* produced is treated as resolved and forgotten, so nothing
+  has to be cleared by hand.
+- **A marker promising questions while none parse is a warning, not a zero.** If PROMPT.md
+  ever stops emitting bold titles, the quiet failure would freeze every streak at its last
+  value and the escalation would never fire again — the same class of bug as a broken
+  sidecar reading as a real measurement. A report with no marker at all is incomplete and
+  is refused too: a truncated L2 report parses as zero questions and would clear the board.
+
+Details from the Codex reviews of omp-autodream PR #25, ported here in #71, each with a test:
+
+- **The store is the install's.** A bare run of the helper (`status`, `clear`) resolves
+  its install dir from its own symlink when that dir carries a `config` or
+  `l1-no-advisor.yml`, and `run.sh` passes `AUTODREAM_DIR` at both call sites.
+- **One file holds the board and its watermark.** The newest counted date is the first
+  line of `question-streaks.tsv` (`#last<TAB>YYYY-MM-DD`), so a question-free report
+  leaves that line and an older rebuild is still refused. Every write is a temp file in
+  the same directory and one rename, so a failure at any step leaves the old file whole.
+  The watermark first lived in a second file, and three Codex rounds in a row found a way
+  for the two files to disagree that let history back in. A state file that exists but
+  cannot be read refuses the update, because reading it as empty restarts every streak.
+  `clear` keeps the watermark.
+- **`clear` takes the same lock as `update`**, before its "nothing to clear" check, and
+  fails loudly when it cannot. It also fails on a key no streak carries (omp-autodream
+  #32): printing "cleared" for a mistyped key left the real streak escalating.
+- **The state directory exists before the lock.** The lock lives beside the state, so on a
+  new state path the lock could never be taken.
+
+Threshold is `AUTODREAM_QUESTION_ESCALATE_AT` (default 3). `question-streaks.sh status`
+prints the current streaks; `clear all|<key>` forgets one after you have acted on it.
+
+`/debate:run tight` found seven defects in the first draft, all in the new code and all
+after the suite was green. Four are why the file reads as it does now:
+
+- **Reruns forged escalations.** `AUTODREAM_FORCE=1 run.sh <today>` re-counted a report
+  already counted, and rebuilding an OLDER date rewrote live state with history. Updates
+  are now idempotent per report date and refuse to go backwards.
+- **A zero-question report never cleared anything**, because `run.sh` returns early on the
+  nothing-was-triaged path, before the usual call site. That path calls the updater too
+  now — otherwise a question reappearing two reports later was called consecutive.
+- **Concurrency could lose an increment.** The scheduled nightly and `autodream-now.sh`
+  carry different launchd labels, so one-instance-per-label does not keep them apart. The
+  read-modify-write takes an atomic `mkdir` lock, reclaims a stale one by age, and SKIPS
+  rather than blocks when it cannot get it.
+- **A parser breakage only wrote to the run log.** That is this feature's own failure mode
+  one level up: every streak silently frozen, no escalation ever again, indistinguishable
+  from a quiet week. A mismatch now posts a banner saying the escalation is down.
+
+It is in `shared-with-sibling.txt`, so the drift check keeps both repos' copies identical.
+Replayed against the real 09-10..14 reports it escalates on **09-12** — two nights before
+the user actually caught the bookmarks failure.
+
 ## Gotchas (host environment)
 
-- The user's shell rewrites `grep` to `rtk grep`, which rejects some flags (`-h`); prefer `tail`/`rg`-style invocations when scripting against logs interactively.
 - The Claude Code sandbox denies writes under `~/.claude/` (including `rm` of symlinks/findings); those operations need the sandbox disabled.
 - Subagent transcripts live in `projects/.../<session>/subagents/agent-*.jsonl` and ARE legitimate sessions to triage; they are not self-pollution.
 - `claude --print` worker calls run from cwd `$HOME`, so any transcript they (used to) leave landed in the `-Users-<you>` project bucket.

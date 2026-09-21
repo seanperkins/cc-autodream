@@ -4,7 +4,7 @@
 # Two-layer pipeline:
 #   L1: For each of yesterday's session JSONLs, spawn a parallel `claude --model haiku`
 #       running SESSION_TRIAGE.md → writes one findings.json per session.
-#   L2: One `claude --model opus` running PROMPT.md → reads all findings JSONs,
+#   L2: One `claude --model claude-opus-4-7` running PROMPT.md → reads all findings JSONs,
 #       writes $DREAMS_DIR/YYYY-MM-DD.md plus a memory-candidates.json sidecar
 #       (proposals only; bin/promote.sh writes accepted ones to Mnemopi).
 #
@@ -34,7 +34,7 @@
 #   AUTODREAM_NETCHECK   set 0 to skip waiting-for-network on retry  default: 1
 #   AUTODREAM_FORCE      set 1 to rebuild even if a report exists    default: 0
 #   AUTODREAM_SLIM_BYTES sessions larger than this are slimmed for L1  default: 262144
-#   AUTODREAM_L2_MODEL   override the L2 aggregator model            default: fable-5 until 2026-06-20, claude-opus-4-7 from 2026-06-21
+#   AUTODREAM_L2_MODEL   override the L2 aggregator model            default: claude-opus-4-7
 #   AUTODREAM_MIN_USER_TURNS  noise-gate floor on user_message_count  default: 2
 #   AUTODREAM_MIN_MINUTES     noise-gate floor on duration_minutes    default: 1
 #   AUTODREAM_STATS_BIN       override the resolved session-stats.sh path, authoritative
@@ -139,6 +139,54 @@ SESSIONS_LIST="$FINDINGS_DIR/sessions.txt"
 # transcript?". Resolve it next to this script first (works for the repo copy and the
 # ~/.claude/autodream symlink), then fall back to the install dir.
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+
+RUNNER_SRC="${BASH_SOURCE[0]}"
+runner_hops=0
+# A symlink can point at another symlink, and a target can be relative to the link's own
+# directory rather than to $PWD. The hop cap keeps a cycle from hanging the run.
+# 8 rather than a bigger round number so the cap is reachable in a test: macOS refuses to
+# execute anything behind 16+ links (ELOOP), so a cap at or above that could never fire on
+# a script that got far enough to run this code, and an untestable guard is a guess. Linux
+# allows 40, where it can genuinely fire. A real install is one hop.
+while [ -L "$RUNNER_SRC" ] && [ "$runner_hops" -lt 8 ]; do
+  runner_link_dir=$(cd "$(dirname "$RUNNER_SRC")" && pwd) || break
+  RUNNER_SRC=$(readlink "$RUNNER_SRC") || break
+  case $RUNNER_SRC in /*) ;; *) RUNNER_SRC="$runner_link_dir/$RUNNER_SRC" ;; esac
+  runner_hops=$((runner_hops + 1))
+done
+
+# Where to look for the libraries below, and it is NOT just SCRIPT_DIR. install.sh
+# symlinks each script into ~/.claude/autodream individually, so a merge swaps the
+# run.sh those links point at instantly while lib-project.sh, adapters.sh,
+# preflight.sh and adapters/ stay missing until install.sh is re-run. Sourcing only
+# from SCRIPT_DIR then skips them in silence and the run dies later on
+# `session_hash: command not found`, with no report and nothing saying why.
+#
+# The walk above already resolved this script to its real location, so the repo's
+# own bin/ is the fallback. Installed dir first, because that is the layout the
+# nightly is supposed to have and the one whose files are meant to win.
+RUNNER_BIN_DIR=""
+if [ ! -L "$RUNNER_SRC" ]; then
+  RUNNER_BIN_DIR=$(cd "$(dirname "$RUNNER_SRC")" 2>/dev/null && pwd) || RUNNER_BIN_DIR=""
+fi
+# $1=basename -> prints the first readable copy, or nothing.
+find_lib() {
+  if [ -r "$SCRIPT_DIR/$1" ]; then printf '%s' "$SCRIPT_DIR/$1"; return 0; fi
+  if [ -n "$RUNNER_BIN_DIR" ] && [ -r "$RUNNER_BIN_DIR/$1" ]; then
+    printf '%s' "$RUNNER_BIN_DIR/$1"; return 0
+  fi
+  return 1
+}
+
+# Harness adapters. run.sh no longer knows which harness it is talking to: it
+# asks the adapter to enumerate, normalise, parse and identify. lib-project.sh
+# holds the one project encoding every adapter must agree on.
+_lib=$(find_lib lib-project.sh) && { # shellcheck source=/dev/null
+  . "$_lib"; }
+_lib=$(find_lib adapters.sh) && { # shellcheck source=/dev/null
+  . "$_lib"; }
+PREFLIGHT=$(find_lib preflight.sh) || PREFLIGHT="$SCRIPT_DIR/preflight.sh"
+
 PRUNE="$SCRIPT_DIR/prune-self-sessions.sh"
 [ -x "$PRUNE" ] || PRUNE="$AUTODREAM_DIR/prune-self-sessions.sh"
 # Root prober — decides which $HOME/.claude*/projects dirs to scan (see root-probe.sh).
@@ -193,7 +241,6 @@ else
   XBOOKMARKS="$SCRIPT_DIR/x-bookmarks.sh"
   [ -x "$XBOOKMARKS" ] || XBOOKMARKS="$AUTODREAM_DIR/x-bookmarks.sh"
 fi
-
 # Provenance of the code actually executing (#29), stamped into run-stats.txt below.
 # Resolved by walking this script's own symlink chain rather than by reusing SCRIPT_DIR,
 # which is a working directory and not a checkout. install.sh symlinks each script
@@ -209,20 +256,6 @@ fi
 # that exists in nobody's history, which only tracked modifications can cause. Counting
 # untracked files made the first production run report runner_dirty: yes over a stray
 # scratch directory, which is exactly the kind of false alarm that gets a signal ignored.
-RUNNER_SRC="${BASH_SOURCE[0]}"
-runner_hops=0
-# A symlink can point at another symlink, and a target can be relative to the link's own
-# directory rather than to $PWD. The hop cap keeps a cycle from hanging the run.
-# 8 rather than a bigger round number so the cap is reachable in a test: macOS refuses to
-# execute anything behind 16+ links (ELOOP), so a cap at or above that could never fire on
-# a script that got far enough to run this code, and an untestable guard is a guess. Linux
-# allows 40, where it can genuinely fire. A real install is one hop.
-while [ -L "$RUNNER_SRC" ] && [ "$runner_hops" -lt 8 ]; do
-  runner_link_dir=$(cd "$(dirname "$RUNNER_SRC")" && pwd) || break
-  RUNNER_SRC=$(readlink "$RUNNER_SRC") || break
-  case $RUNNER_SRC in /*) ;; *) RUNNER_SRC="$runner_link_dir/$RUNNER_SRC" ;; esac
-  runner_hops=$((runner_hops + 1))
-done
 # Still a symlink means the walk gave up (a cycle, or a chain past the cap) rather than
 # arriving anywhere. Resolving the truncated path would stamp whatever checkout it happens
 # to sit in, and a confidently wrong sha is worse than no sha at all — the whole point of
@@ -257,6 +290,66 @@ export PATH="$HOME/.cargo/bin:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:
 cd "$HOME" || exit 1
 
 log() { echo "[$(date '+%H:%M:%S')] $*"; }
+
+# Every FATAL goes through here so the reason survives to the exit path. A run
+# that dies writes no report and posts no banner, and until fatal_exit existed
+# that made a failed night completely silent — the log line was the only record,
+# and nothing reads the log.
+FATAL_REASON=""
+log_fatal() { FATAL_REASON="$1"; log "FATAL: $1"; }
+
+# The one exit for a run that cannot continue. Leaves a marker the next run can
+# read AND posts a banner now, because those cover different failures: a
+# transient cause is caught by the marker when a later night succeeds, while a
+# persistent one — a lost exec bit, jq off the launchd PATH — never has a later
+# success to be read by, so it needs the banner tonight.
+#
+# Deliberately NOT a stub report. A report is what the idempotency guard reads as
+# "this date is complete", and it is not.
+fatal_exit() {
+  local reason="${FATAL_REASON:-the run stopped before it produced a report}"
+  mkdir -p "$FINDINGS_DIR" 2>/dev/null || true
+  # NEVER over a date that already has a report. Moving the claude check below the
+  # idempotency guard fixed one call site; the destructive behaviour was still
+  # here, and AUTODREAM_FORCE bypasses that guard BY DESIGN — which is the
+  # documented `autodream-now.sh <date> --force` path. Any fatal under it would
+  # then overwrite that date's full L1/L2 telemetry with a five-line stub and
+  # announce a FAILED night while dreams/<date>.md sits there complete.
+  # unassembled_dates() would not catch it either, because the report exists.
+  #
+  # The guard covers the WRITE, and only the write. The first version returned
+  # here, which took the banner down with it — and this branch is reachable in
+  # exactly one situation, the documented `autodream-now.sh <date> --force`
+  # rebuild, which runs detached under launchd where the banner is the only
+  # surface an operator sees. jq off the launchd PATH, preflight fatals, no
+  # marker (correctly), no banner, and unassembled_dates() skips the date because
+  # a report exists: the operator polls dreams/<date>.md, finds the OLD report
+  # sitting there, and reads a failed rebuild as a successful one. Nothing about
+  # protecting a complete date's telemetry requires staying quiet about the run
+  # that just died trying to replace it.
+  if [ -s "$REPORT_PATH" ]; then
+    log "  not overwriting run-stats.txt: $TARGET_DATE already has a complete report"
+    notify_fatal "$reason (the existing report for $TARGET_DATE is unchanged)"
+    return 1
+  fi
+  {
+    printf '# Autodream run self-audit — %s\n' "$TARGET_DATE"
+    printf 'runner_commit: %s\n' "$RUNNER_COMMIT"
+    printf 'runner_dirty: %s\n' "$RUNNER_DIRTY"
+    printf 'fatal: %s\n' "$reason"
+    printf 'sessions_triaged: 0\n'
+  } > "$FINDINGS_DIR/run-stats.txt" 2>/dev/null || true
+  notify_fatal "$reason"
+  return 1
+}
+
+# Both fatal paths post the banner, so the posting lives in one place. Keeping
+# two copies is how the guarded path lost its banner in the first place.
+notify_fatal() { # $1=reason
+  [ -x "$AUTODREAM_DIR/notify.sh" ] || return 0
+  "$AUTODREAM_DIR/notify.sh" --failure "$TARGET_DATE" "$1" \
+    || log "failure notification returned non-zero (continuing)"
+}
 
 # Wipe the isolated worker bucket. Claude Code's async AI-title generation writes a
 # one-line `{"type":"ai-title",...}` stub into the launch cwd's session bucket even
@@ -294,7 +387,15 @@ probe_roots() {
     # lie. Folders the user explicitly ignored are likewise skipped.
     SESSION_ROOTS=$("$ROOT_PROBE" --consolidated 2>/dev/null) || SESSION_ROOTS=""
   fi
-  [ -n "$SESSION_ROOTS" ] || SESSION_ROOTS="$HOME/.claude/projects"
+  # A last-resort default is NOT a configured root. Discovery returning nothing
+  # means a fresh host with no store yet, and that has to stay a legitimate quiet
+  # night — the all-roots-unavailable fatal below must not fire on a fallback
+  # nobody asked for. This flag is what tells the two apart.
+  SESSION_ROOTS_ARE_FALLBACK=0
+  if [ -z "$SESSION_ROOTS" ]; then
+    SESSION_ROOTS="$HOME/.claude/projects"
+    SESSION_ROOTS_ARE_FALLBACK=1
+  fi
   log "session roots: ${SESSION_ROOTS//:/, }"
 }
 
@@ -310,30 +411,590 @@ write_unindexed_flag() {
 }
 
 # Find sessions modified during the target day across every session root.
+NL=$'\n'            # for the newline-in-path check below
+TAB=$'\t'           # ditto; the L1 xargs -I fan-out turns a tab into a space
+REJECTED_PATHS=0    # session paths a line-based sessions.txt cannot represent
+PARTIAL_ROOTS=0     # roots whose enumerator failed but still returned data
+ROOTS_CONFIGURED=0  # roots we were told to scan
+ROOTS_SCANNED=0     # roots that existed and were walked
+ROOTS_UNAVAILABLE=0 # roots that were configured but are not directories
+ROOTS_FAILED=0      # roots reached but whose enumeration failed and returned nothing
+SESSION_ROOTS_ARE_FALLBACK=0  # 1 when SESSION_ROOTS is the bare default nobody configured
+COLLIDED_DROPPED=0  # paths removed from the worklist by collision handling
+SIDECAR_STALE_ROWS=0  # provenance rows that could not be rewritten; sessions_by_source is high by this much
+DUPLICATE_PATHS=0   # one path reached twice: overlapping roots, or two adapters
+HASH_COLLISIONS=0   # two different paths truncating to one artifact hash
+SESSIONS_BY_SOURCE=none
+
+# Which roots an adapter scans. The claude adapter uses the roots root-probe
+# resolved, because that prober is what decides which $HOME/.claude*/projects
+# dirs are indexed and the user's per-folder choices live there. Any other
+# adapter uses its own manifest defaults, since root-probe knows nothing about
+# a second harness's store.
+adapter_roots() { # $1=adapter name -> one root per line
+  # Every line MUST be newline-terminated. `while read` drops a final
+  # unterminated line, so a printf '%s' here silently skipped the only root on a
+  # single-root host — enumeration found nothing and reported it as a quiet zero.
+  if [ "$1" = "claude" ]; then
+    printf '%s\n' "$SESSION_ROOTS" | tr ':' '\n'
+    return 0
+  fi
+  local roots
+  roots=$(adapter_manifest_get "$1" '.session_roots_default[]' 2>/dev/null) || return 0
+  [ -n "$roots" ] || return 0
+  printf '%s\n' "$roots"
+}
+
+# The adapters actually enumerated this run.
+#
+# The fallback fires ONLY when the adapter machinery is genuinely absent — an
+# install symlinked at a tree predating adapters/ — so a partial upgrade degrades
+# instead of losing a night. It must NOT fire when the loader ran and accepted
+# zero adapters, because that is a refusal: a claude directory rejected for
+# failing containment or carrying a mismatched manifest would otherwise be
+# manufactured back into the list and executed anyway, which turns every check in
+# adapters.sh into decoration.
+#
+# Until per-session dispatch is adapter-aware, only `claude` may be enabled. The
+# rest of the pipeline — the substantive filter, the stats sidecar, the slimmer
+# and the L1 engine — is still Claude-specific, so enumerating a second harness
+# here would hand its sessions to a Claude parser that reads them as empty and
+# drops them silently. Refusing out loud is the honest version of not supporting
+# it yet.
+# Resolved ONCE into a global, by a function that prints nothing.
+#
+# The first version of this was a memoised `enabled_adapters` that every caller
+# invoked as `$(enabled_adapters)` — so the cache assignment happened inside a
+# command substitution and died with the subshell, leaving ENABLED_ADAPTERS_RESOLVED
+# at 0 in the parent on every call. The loader re-ran all three times and the
+# duplicate warning the memo was written to stop came straight back. Reproduced
+# directly: the uncached body ran 3/3 times and the cache stayed empty.
+#
+# That is precisely the trap adapters.sh's own header documents for
+# adapters_rejected, and writing it again a few hundred lines away is why that
+# header says a file crosses the boundary and a variable does not. Here the
+# boundary is crossed by not creating one: resolve_enabled_adapters assigns the
+# global and returns, callers read ENABLED_ADAPTERS.
+ENABLED_ADAPTERS=""
+ENABLED_ADAPTERS_RESOLVED=0
+resolve_enabled_adapters() {
+  [ "$ENABLED_ADAPTERS_RESOLVED" = "1" ] && return 0
+  ENABLED_ADAPTERS=$(_enabled_adapters_uncached)
+  ENABLED_ADAPTERS_RESOLVED=1
+  return 0
+}
+_enabled_adapters_uncached() {
+  # "Genuinely absent" means the loader is not sourced OR the adapters tree does
+  # not exist — a tarball or partial install. That is a legacy install and it
+  # falls back. It is NOT the same as a present tree from which the loader
+  # accepted nothing, which is a refusal and must stop the run. Conflating the
+  # two is how the first version of this both broke a non-git install test and
+  # would have let a rejected adapter run anyway.
+  if ! declare -F adapters_list >/dev/null 2>&1 || [ ! -d "$(adapters_root 2>/dev/null)" ]; then
+    printf 'claude'; return 0
+  fi
+  local a
+  a=$(adapters_list 2>/dev/null | tr '\n' ' ')
+  a="${a% }"
+  if [ -z "${a// /}" ]; then
+    printf ''                        # tree present, nothing accepted: a refusal
+    return 0
+  fi
+  local one keep=""
+  for one in $a; do
+    if [ "$one" = "claude" ]; then keep="claude"; else
+      # stderr, NOT stdout: this function's stdout is its return channel, and
+      # log() is a bare echo. Writing a diagnostic here put the log text into the
+      # captured adapter list, where it was word-split into bogus adapter names
+      # and also masked the empty-list abort.
+      log "  adapter '$one' is enabled but per-session dispatch is not adapter-aware yet; not enumerating it" >&2
+    fi
+  done
+  printf '%s' "$keep"
+}
+
 scan_roots() {
-  : > "$SESSIONS_LIST.raw"
-  local -a roots
-  IFS=: read -ra roots <<< "$SESSION_ROOTS"
-  local r
-  for r in "${roots[@]}"; do
+  # BOTH lists, checked. build_source_sidecar reads .src, so a raw worklist that
+  # holds two colliding paths while .src has lost a row means detection runs over
+  # an incomplete input and both paths reach dispatch — the same fail-open
+  # overwrite, one stage earlier than the collision index.
+  if ! { : > "$SESSIONS_LIST.raw"; } 2>/dev/null \
+     || ! { : > "$SESSIONS_LIST.src"; } 2>/dev/null; then
+    log_fatal "cannot write the session lists in $FINDINGS_DIR"
+    return 1
+  fi
+  REJECTED_PATHS=0
+  local src adapters
+  resolve_enabled_adapters
+  adapters="$ENABLED_ADAPTERS"
+  # The accepted set, resolved once for enumerate_for's per-root gate.
+  ACCEPTED_ADAPTERS=$(adapters_list 2>/dev/null)
+  if [ -z "${adapters// /}" ]; then
+    # Two distinct causes reach here and they need different messages: the
+    # loader accepted nothing at all, or it accepted adapters but none of them
+    # is claude. Printing the first for the second sends the reader hunting a
+    # containment or manifest failure that never happened.
+    local accepted; accepted=$(adapters_list 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+    if [ -n "$accepted" ]; then
+      log_fatal "no usable adapter — accepted [$accepted] but per-session dispatch is claude-only, and claude is not among them. Refusing to scan."
+    else
+      log_fatal "the adapter loader ran and accepted no adapters (rejected: $(adapters_rejected 2>/dev/null)). Refusing to scan."
+    fi
+    RAW=0
+    # This path is a TOTAL outage with a mundane trigger — adapters/claude/adapter.sh
+    # losing its exec bit to a tarball copy, a restrictive umask or
+    # core.fileMode=false, since _adapter_ok requires -x. A host that produced a
+    # full report last night then produces nothing, every night.
+    #
+    # The marker and the banner come from fatal_exit in run(), which every fatal
+    # path funnels through; log_fatal above is what carries the reason to it.
+    return 1
+  fi
+  for src in $adapters; do
+    scan_one_adapter "$src" || return 1
+  done
+  # Roots were configured and not one of them was reachable. That is a broken
+  # SESSION_ROOTS or a vanished store, and it must not read as a quiet night:
+  # RAW would be 0, every shortfall counter would be 0, and the stub would say
+  # no files were modified. A fresh host with NO roots configured is a different
+  # thing and stays legitimate.
+  # The fatal is about roots that were never REACHED, and it stays that way.
+  # Subtracting ROOTS_FAILED here looked symmetric and was a regression: on a
+  # single-root host — the default install — "enumerator exited nonzero and
+  # returned nothing" is the exact shape of a quiet date plus any transient find
+  # error, a bucket vanishing mid-walk or one unreadable directory (see the note
+  # at the enumeration branch). That host would then get no report at all on a
+  # night whose honest answer is the empty-night stub.
+  #
+  # A failed root is not silent without this: it warns in the log, increments
+  # roots_failed, reaches run-stats.txt on both the zero-session and full paths,
+  # and PROMPT.md's Corpus integrity bullet names it in the morning report. That
+  # is the right weight for "we read less than we meant to" — a caveat on the
+  # night, not the loss of it.
+  if [ "${SESSION_ROOTS_ARE_FALLBACK:-0}" != "1" ] \
+     && [ "$ROOTS_CONFIGURED" -gt 0 ] && [ "$ROOTS_SCANNED" -eq 0 ]; then
+    log_fatal "all $ROOTS_CONFIGURED configured session root(s) are unavailable; refusing to report an empty night over a store that was never reached"
+    return 1
+  fi
+
+  # A transcript reachable from two roots (one dir a symlink of another) must be
+  # triaged exactly once; the first source to claim a path keeps it.
+  sort_unique_inplace "$SESSIONS_LIST.raw" "the session worklist" || return 1
+  RAW=$(wc -l < "$SESSIONS_LIST.raw" | tr -d ' ')
+}
+
+scan_one_adapter() { # $1=adapter name
+  local src="$1" r
+  while IFS= read -r r; do
     [ -n "$r" ] || continue
     # SESSION_ROOTS is colon-separated, so a root path containing ':' is unrepresentable:
     # the split above already fragmented it. Catch the symptom — a fragment that is not
     # a directory (or that was split out of one) — and say why it's being skipped rather
     # than silently scanning nothing.
+    ROOTS_CONFIGURED=$((ROOTS_CONFIGURED + 1))
     if [ ! -d "$r" ]; then
+      ROOTS_UNAVAILABLE=$((ROOTS_UNAVAILABLE + 1))
       log "WARNING: session root is not a directory (possible ':' in path — SESSION_ROOTS is colon-separated): $r"
       continue
     fi
-    find "$r" -type f -name '*.jsonl' \
-         -newermt "$TARGET_DATE 00:00:00" \
-         ! -newermt "$NEXT_DATE 00:00:00" \
-         2>/dev/null >> "$SESSIONS_LIST.raw"
-  done
-  # A transcript reachable from two roots (e.g. one dir is a symlink of another) must
-  # be triaged exactly once.
-  sort -u "$SESSIONS_LIST.raw" -o "$SESSIONS_LIST.raw"
-  RAW=$(wc -l < "$SESSIONS_LIST.raw" | tr -d ' ')
+    ROOTS_SCANNED=$((ROOTS_SCANNED + 1))
+    # NUL transport for the fan-out, so a path carrying a space, a tab or a glob
+    # character survives intact. It does NOT save a path carrying a newline:
+    # sessions.txt is line-delimited and stays that way, because the hash
+    # assignments in l1_missing_count() and dispatch_l1() key each artifact by
+    # sha1 of the whole line, oversized-gate.sh recomputes that same hash from
+    # the file, and every archived findings dir depends on the shape. Such a path is currently written as two lines and
+    # the runner then invents a session that does not exist, so it is rejected
+    # here — before either representation is built — rather than transported.
+    # Stage enumeration to a file and CHECK its status. Reading the adapter
+    # through process substitution hid the producer's exit code, so a root that
+    # failed on permissions or I/O emitted nothing and the run carried on to
+    # finalise a cheerful "no sessions" report over a corpus it never saw.
+    local nulfile status
+    nulfile=$(mktemp "$FINDINGS_DIR/.enum.XXXXXX") || { log_fatal "cannot stage enumeration in $FINDINGS_DIR"; return 1; }
+    enumerate_for "$src" "$r" > "$nulfile"
+    status=$?
+    if [ "$status" -ne 0 ]; then
+      # A nonzero status does NOT mean nothing was read. BSD find exits 1 when a
+      # single subdirectory is unreadable or vanishes mid-walk while still
+      # printing every other match — verified: 3 files, one locked directory,
+      # exit 1, two paths printed. Treating that as fatal threw away a usable
+      # corpus and produced NO report on a night that previously produced a full
+      # one, which is worse than the silent-zero this check exists to catch.
+      #
+      # So the distinction is output, not status. Nothing read AND a failure is a
+      # real enumeration failure and stops the run. Something read with a failure
+      # is a partial walk: carry on with what was returned and say so loudly, so
+      # a shrinking corpus is visible in the log and the counter rather than
+      # being mistaken for a quiet night.
+      if [ -s "$nulfile" ]; then
+        PARTIAL_ROOTS=$((PARTIAL_ROOTS + 1))
+        log "WARNING: enumeration for adapter '$src' at root $r exited $status but returned data; continuing with a possibly INCOMPLETE corpus for this root"
+      else
+        # Nothing read from THIS root. That is not a reason to throw away the
+        # roots that worked. Multi-root scanning is this tool's premise, and a
+        # secondary root (~/.claude-nous/projects, ~/.claude-sigint/projects)
+        # legitimately matches nothing on a given date — while BSD find exits 1
+        # for ANY unreadable subdirectory anywhere in the walk, match or no
+        # match. Verified on this host: an unreadable sibling directory makes
+        # `find` exit 1 both with and without matches; without it, exit 0. So one
+        # permission-denied directory under a quiet secondary root used to kill a
+        # night on which the primary root had a full corpus — and kill it
+        # invisibly, because run() returned 1 before notify.sh ran and no
+        # findings JSONs were written for unassembled_dates() to notice.
+        #
+        # Count it, say it loudly, carry on. The all-roots-failed case below is
+        # what still refuses to report over a store nothing was read from.
+        ROOTS_FAILED=$((ROOTS_FAILED + 1))
+        log "WARNING: enumeration failed for adapter '$src' at root $r (exit $status) and returned nothing; this root contributes NO sessions to tonight's corpus"
+        rm -f "$nulfile"
+        continue
+      fi
+    fi
+    while IFS= read -r -d '' sp; do
+      # Reject every character the downstream artifacts cannot carry. Verified on
+      # this host against the real consumers rather than assumed:
+      #   newline    sessions.txt is line-delimited; find writes it as two lines
+      #              and the runner then triages a session that does not exist
+      #   tab        `xargs -I {}` at the L1 fan-out turns it into a space, so the
+      #              worker hashes and opens a path that is not the one enumerated
+      #   backslash  the same fan-out deletes it outright
+      #   quote      the same fan-out dies with "unterminated quote" and takes the
+      #              WHOLE night's dispatch with it, not just this session
+      # The last three are a pre-existing limitation of the xargs -I transport, not
+      # of this change; an earlier draft accepted tabs because the hash and
+      # sessions.txt tolerate them, having checked those two consumers and not the
+      # fan-out. Accepting a path the dispatcher then corrupts is worse than
+      # refusing it out loud, so these are counted refusals until that transport is
+      # NUL-safe.
+      case "$sp" in
+        *"$NL"*|*"$TAB"*|*\\*|*\"*|*\'*)
+          REJECTED_PATHS=$((REJECTED_PATHS + 1))
+          log "  skip: session path holds a character the artifact list or the L1 fan-out cannot carry: $(printf '%q' "$sp")"
+          continue
+          ;;
+      esac
+      # Paired writes, both checked. Losing either half desynchronises the
+      # worklist from its provenance, and the collision detector reads the
+      # provenance half.
+      # source FIRST: the adapter name is a validated safe identifier with no tab,
+      # so `read -r src sp` lets sp absorb the whole remainder. The reverse order
+      # truncated any path holding a tab and silently lost its provenance.
+      if ! printf '%s\n' "$sp" >> "$SESSIONS_LIST.raw" 2>/dev/null \
+         || ! printf '%s\t%s\n' "$src" "$sp" >> "$SESSIONS_LIST.src" 2>/dev/null; then
+        log_fatal "could not record $sp in the session lists"
+        # Remove the staging file on THIS exit too. Under AUTODREAM_FORCE=1 the
+        # findings dir is reused across reruns, so repeated failures would pile up
+        # .enum.* files in the directory the aggregator globs.
+        rm -f "$nulfile"
+        return 1
+      fi
+    done < "$nulfile"
+    rm -f "$nulfile"
+  done < <(adapter_roots "$src")
+  return 0
+}
+
+# Enumeration for one adapter and one root. Delegates to the adapter when one is
+# installed; the inline find is the fallback for an install whose tree predates
+# adapters/, so a partial upgrade degrades rather than losing the night.
+enumerate_for() { # $1=adapter $2=root -> NUL-delimited paths
+  # Gated on the adapter having been ACCEPTED, not merely on adapter.sh being
+  # executable: an executable check alone would run a directory that failed
+  # containment.
+  # ACCEPTED_ADAPTERS is assigned directly in scan_roots. This used to call
+  # adapters_list per root, and that walk does two realpaths plus a jq for every
+  # adapter directory — repeated work whose answer cannot change mid-run, since
+  # nothing writes to adapters/ while the scan is in flight.
+  if declare -F adapter_run >/dev/null 2>&1 \
+     && printf '%s\n' ${ACCEPTED_ADAPTERS:-} | grep -qxF "$1" \
+     && [ -x "$(adapters_root 2>/dev/null)/$1/adapter.sh" ]; then
+    # Return the ADAPTER's status, not a literal 0. A `return 0` here silently
+    # defeated the caller's status check: enumeration was staged to a file and
+    # the exit code examined, and this wrapper handed it a success every time.
+    # The suite passed 306 assertions over that, because none of them ran an
+    # adapter whose enumerate fails. tests/run-all.sh now has one.
+    adapter_run "$1" enumerate "$2" "$TARGET_DATE" "$NEXT_DATE"
+    return $?
+  fi
+  # The fallback is CLAUDE-ONLY. It hardcodes *.jsonl, and nothing reads
+  # session_glob from a manifest, so walking another harness's roots with the
+  # Claude glob would return nothing and read as a quiet night — a silent wrong
+  # answer rather than a loud one. Unreachable today because only claude is ever
+  # enabled, but it becomes live the moment a second adapter ships alongside an
+  # install whose adapters/ link is stale, which is the exact skew this fallback
+  # exists for.
+  if [ "$1" != "claude" ]; then
+    log "  no adapter for '$1' and no fallback that knows its session format; this root contributes nothing" >&2
+    return 1
+  fi
+  find "$2" -type f -name '*.jsonl' \
+       -newermt "$TARGET_DATE 00:00:00" \
+       ! -newermt "$NEXT_DATE 00:00:00" \
+       -print0 2>/dev/null
+}
+
+# Source provenance, keyed by the artifact hash rather than tagged into
+# sessions.txt. That file stays one bare path per line because the hash
+# assignments in l1_missing_count() and dispatch_l1() key each artifact by sha1
+# of the WHOLE line, oversized-gate.sh recomputes the same hash from it, and
+# every archived findings dir depends on the shape. Adding a field would silently invalidate all of them.
+#
+# The hash formula is deliberately NOT changed to include the source either, for
+# the same reason. Instead the two ways two adapters can land on one artifact are
+# detected: the same path claimed twice (a misconfiguration — keep the first),
+# and two DIFFERENT paths truncating to one hash (no sensible winner — skip both).
+# Sort a file unique, in place, atomically, and report failure.
+#
+# `sort -u FILE -o FILE` can leave FILE empty or partial when it fails, and every
+# consumer downstream then trusts that damaged file. The worklist and the
+# collision drop set both used the unchecked form; the drop set was fixed first
+# and the worklist was left, which is exactly the kind of half-fix this whole
+# review has been catching. One helper, both callers.
+sort_unique_inplace() { # $1=file $2=what (for the log)
+  local f="$1" what="$2"
+  if sort -u "$f" > "$f.su.$$" 2>/dev/null && mv -f "$f.su.$$" "$f" 2>/dev/null; then
+    return 0
+  fi
+  rm -f "$f.su.$$"
+  log_fatal "could not deduplicate $what; refusing to continue over a possibly damaged list"
+  return 1
+}
+
+# Rewrite a file by filtering it, atomically, with EVERY failure accounted for.
+#
+# This exists because the same three-line pattern was patched site by site across
+# four review rounds and each patch closed one hole and left another: the grep
+# status was swallowed, then checked but the mv was not, then the mv was guarded
+# but its failure was silent. Three copies meant three chances to get it wrong.
+#
+# Contract: on success the file is replaced. On ANY failure the original is left
+# untouched, a reason is logged, and the caller gets a nonzero status so it can
+# decide whether that is survivable. grep exit 1 means "no lines matched", which
+# for a filter is a legitimate empty result, not an error.
+rewrite_filtered() { # $1=file $2=what (for the log) ; remaining args = grep args
+  local file="$1" what="$2"; shift 2
+  local tmp="$file.rw.$$" grc
+  grep "$@" "$file" > "$tmp" 2>/dev/null; grc=$?
+  if [ "$grc" -gt 1 ]; then
+    rm -f "$tmp"
+    log "  WARNING: could not rewrite $what (grep exit $grc); leaving it unchanged"
+    return 1
+  fi
+  if ! mv -f "$tmp" "$file" 2>/dev/null; then
+    rm -f "$tmp"
+    log "  WARNING: could not replace $what (mv failed); leaving it unchanged"
+    return 1
+  fi
+  return 0
+}
+
+build_source_sidecar() {
+  local sidecar="$FINDINGS_DIR/sessions-source.txt"
+  local seen="$FINDINGS_DIR/.hash-to-path"
+  local drop="$FINDINGS_DIR/.collided"
+  # Fail closed on the bookkeeping files. If .hash-to-path cannot be written,
+  # every path looks unseen and no collision is ever DETECTED; if .collided
+  # cannot be appended, the drop set is short and the fatal dedup block below is
+  # bypassed. Either way both sessions reach dispatch and overwrite the shared
+  # artifact — the failure this whole function exists to prevent, arrived at by
+  # a silently unwritable temp file.
+  if ! { : > "$sidecar"; } 2>/dev/null || ! { : > "$seen"; } 2>/dev/null \
+     || ! { : > "$drop"; } 2>/dev/null; then
+    log_fatal "cannot write the provenance bookkeeping files in $FINDINGS_DIR; refusing to run collision detection blind"
+    return 1
+  fi
+  DUPLICATE_PATHS=0; HASH_COLLISIONS=0; SESSIONS_BY_SOURCE=""
+  local src sp h prev
+  # source FIRST, so a path holding any remaining oddity is absorbed whole by the
+  # last variable rather than truncated into it.
+  while IFS=$'\t' read -r src sp; do
+    [ -n "$sp" ] || continue
+    # `|| continue` treated "legitimately absent" (exit 1, dropped at enumeration)
+    # and "grep failed" (exit >1) as the same thing. On an I/O error that skips
+    # the row silently, so a collision may never be DETECTED at all and the
+    # unchanged worklist is dispatched with both paths on one artifact — failing
+    # open on the way in to the check that fails closed on the way out.
+    grep -qxF "$sp" "$SESSIONS_LIST.raw" 2>/dev/null; local prc=$?
+    case "$prc" in
+      0) : ;;                # present, carry on
+      1) continue ;;         # dropped at enumeration, expected
+      *) log_fatal "could not check the worklist for $sp (grep exit $prc); refusing to build provenance over an unreadable list"
+         return 1 ;;
+    esac
+    if ! h=$(session_hash "$sp"); then
+      log_fatal "could not derive an artifact hash for $sp; refusing to run collision detection on unusable keys"
+      return 1
+    fi
+    # The stored path is everything after the 12-char hash and its tab, taken by
+    # offset rather than by field split, so no delimiter inside the path matters.
+    #
+    # awk's status is checked: a read error returns empty, which is
+    # indistinguishable from "hash unseen". A write-only .hash-to-path passes the
+    # truncate and append guards and still cannot be read, so every path would
+    # look new, .collided would stay empty, and both colliding sessions reach
+    # dispatch.
+    if ! prev=$(awk -v k="$h" 'substr($0,1,12)==k {print substr($0,14); exit}' "$seen" 2>/dev/null); then
+      log_fatal "could not read the collision index; refusing to detect collisions blind"
+      return 1
+    fi
+    if [ -n "$prev" ]; then
+      if [ "$prev" = "$sp" ]; then
+        DUPLICATE_PATHS=$((DUPLICATE_PATHS + 1))
+        # NOT "claimed by more than one adapter". Only `claude` is ever enabled, and
+        # sessions.txt.src is not deduplicated while .raw is sort -u'd, so every
+        # duplicate today is one transcript reached through two entries of
+        # SESSION_ROOTS — ordinary on a host where root-probe autodetects each
+        # $HOME/.claude*/projects and one is a symlink of another. Naming adapters
+        # sends the reader after a misconfiguration that does not exist.
+        log "  duplicate: $sp was reached more than once (two session roots, or two adapters); keeping the first"
+      else
+        # Two DIFFERENT paths on one truncated hash. There is no sensible winner,
+        # so BOTH are dropped from the worklist. An earlier version logged
+        # "skipping both" while skipping neither: it removed the sidecar row and
+        # left both paths in sessions.txt.raw, so two workers still raced for one
+        # <hash>.json and silently overwrote each other. The log said one thing and
+        # the code did another, which is worse than not checking at all.
+        HASH_COLLISIONS=$((HASH_COLLISIONS + 1))
+        log "  COLLISION: $h maps to two different sessions; dropping both: $prev / $sp"
+        if ! printf '%s\n%s\n' "$prev" "$sp" >> "$drop" 2>/dev/null; then
+          log_fatal "could not record a collided path for removal; refusing to dispatch two sessions onto one artifact"
+          return 1
+        fi
+        # Rewrite unconditionally. `grep -v` exits 1 when it removes the only line,
+        # so a guarded `&& mv` left the stale mapping behind in exactly the
+        # single-entry case.
+        # DELIBERATELY survivable. A stale provenance row overstates
+        # sessions_by_source by one and the helper has already logged why; the
+        # worklist, which is not survivable, is handled below.
+        #
+        # NOT counted here. Incrementing on a failed ATTEMPT is what kept this
+        # counter attempt-based: a later rewrite may well remove the row, and a
+        # single row may be attempted several times. The count is taken from the
+        # final sidecar once, below.
+        rewrite_filtered "$sidecar" "the source sidecar" -v "^$h	" || :
+      fi
+      continue
+    fi
+    if ! printf '%s\t%s\n' "$h" "$sp" >> "$seen" 2>/dev/null; then
+      log_fatal "could not record $sp in the collision index; refusing to detect collisions blind"
+      return 1
+    fi
+    # Fail closed, like every sibling write in this function. A silent `|| :` here
+    # drops rows on a full disk, SESSIONS_BY_SOURCE is then computed from the short
+    # sidecar below and reported as fact, with no counter and no line saying it is
+    # short. This function's own header argues that a silently unwritable file is
+    # how you arrive at the failure it exists to prevent.
+    if ! printf '%s\t%s\n' "$h" "$src" >> "$sidecar" 2>/dev/null; then
+      log_fatal "could not record provenance for $h in $sidecar"
+      return 1
+    fi
+  done < "$SESSIONS_LIST.src" || {
+    log_fatal "could not read the session source list; refusing to detect collisions over an unreadable input"
+    return 1
+  }
+  rm -f "$seen"
+
+  # Actually remove the colliding sessions from the worklist. Without this the
+  # detection is decorative.
+  if [ -s "$drop" ]; then
+    # Deduplicate first. The earlier path is appended again for every later
+    # collision on the same hash, so three paths sharing one hash produce
+    # A,B,A,C — four lines describing three drops. Everything below counts and
+    # filters from this file, so the duplicate propagated into the telemetry.
+    # BOTH the worklist filter and the post-filter verification read this pattern
+    # file, so a damaged one lets a collided path through while everything
+    # downstream reports success.
+    if ! sort_unique_inplace "$drop" "the collision drop set"; then
+      rm -f "$drop"; return 1
+    fi
+
+    # The worklist is the one that must FAIL CLOSED. Leaving it unchanged means
+    # both colliding paths are still in it, so two workers target one <hash>.json
+    # and overwrite each other — exactly what this branch exists to prevent.
+    if ! rewrite_filtered "$SESSIONS_LIST.raw" "the worklist" -vxF -f "$drop"; then
+      log_fatal "refusing to dispatch two sessions onto one artifact"
+      rm -f "$drop"; return 1
+    fi
+    # Verify the drop rather than trusting an exit code. grep -q returns 1 for
+    # "not found", which is what we want, but anything ABOVE 1 is an I/O error
+    # and would otherwise take the same success path — failing open on the one
+    # check that exists to fail closed.
+    grep -qxF -f "$drop" "$SESSIONS_LIST.raw" 2>/dev/null; local vrc=$?
+    if [ "$vrc" -ne 1 ]; then
+      log_fatal "could not confirm the collided paths are gone from the worklist (grep exit $vrc); refusing to dispatch two sessions onto one artifact"
+      rm -f "$drop"; return 1
+    fi
+    # RAW is the ENUMERATED count and stays that way. Overwriting it with the
+    # post-drop worklist size made a forced two-session collision report
+    # sessions_found_raw: 0 and "0 session file(s) were enumerated" — telling the
+    # reader nothing was there when two things were, and were dropped for cause.
+    COLLIDED_DROPPED=$(( $(wc -l < "$drop" | tr -d ' ') ))
+    # Their provenance rows go too. Note the narrower claim: this removes rows
+    # for COLLISION drops only. build_source_sidecar runs before the self-prune
+    # and the empty-session filter, so the sidecar still carries rows for worker
+    # transcripts and 0-turn shells that are later excluded. Nothing consumes it
+    # yet; the first consumer that joins it against <hash>.json must expect
+    # hashes with no findings record.
+    while IFS= read -r sp; do
+      [ -n "$sp" ] || continue
+      h=$(session_hash "$sp") || continue
+      # Survivable: a stale row overstates sessions_by_source by one and the
+      # helper has already said so. The worklist, which is not survivable, was
+      # handled above.
+      rewrite_filtered "$sidecar" "the provenance row for $h" -v "^$h	" || :
+    done < "$drop"
+
+    # Count stale rows from the FINAL sidecar, over UNIQUE hashes. Two things
+    # made the earlier version wrong in both directions: it added a count when a
+    # rewrite ATTEMPT failed, and it then iterated dropped PATHS. A two-path
+    # collision with one persistent stale row reported 3 — one attempt plus the
+    # same hash found twice — and a transient failure a later rewrite had already
+    # repaired reported 1 when the honest answer was 0. What the reader needs is
+    # how many rows are stale now, so that is what is measured.
+    # Stage, THEN sort. `producer || exit 1 | sort -u` is masked: without
+    # pipefail sort exits 0 on empty input, so a failing producer produced an
+    # empty successful assignment and the metric read 0 — the exact false zero
+    # this branch exists to avoid.
+    local stale_hashes hstage ok_stage=1
+    hstage="$FINDINGS_DIR/.stale-hashes.$$"
+    : > "$hstage" 2>/dev/null || ok_stage=0
+    if [ "$ok_stage" = "1" ]; then
+      while IFS= read -r sp; do
+        [ -n "$sp" ] || continue
+        if ! session_hash "$sp" >> "$hstage" 2>/dev/null; then ok_stage=0; break; fi
+        printf '\n' >> "$hstage" 2>/dev/null || { ok_stage=0; break; }
+      done < "$drop"
+    fi
+    if [ "$ok_stage" = "1" ] && stale_hashes=$(sort -u "$hstage" 2>/dev/null); then
+      rm -f "$hstage"
+      SIDECAR_STALE_ROWS=0
+      local sh grc2
+      for sh in $stale_hashes; do
+        grep -q "^$sh	" "$sidecar" 2>/dev/null; grc2=$?
+        case "$grc2" in
+          0) SIDECAR_STALE_ROWS=$((SIDECAR_STALE_ROWS + 1)) ;;
+          1) : ;;                       # genuinely absent
+          # An error is NOT "absent". Reporting 0 because the check itself broke
+          # is the false-clean reading this repo already refuses elsewhere with
+          # overlap_measured; say unknown instead.
+          *) SIDECAR_STALE_ROWS=unknown; break ;;
+        esac
+      done
+    else
+      rm -f "$hstage"
+      SIDECAR_STALE_ROWS=unknown
+      log "  WARNING: could not compute the stale-row count; reporting it as unknown rather than zero"
+    fi
+  fi
+  rm -f "$drop"
+
+  # Counted from the FINAL sidecar rather than from the loop, because collision
+  # resolution removes rows after the fact and a count taken during the walk
+  # reported sessions that no longer exist in the worklist.
+  SESSIONS_BY_SOURCE=$(awk -F'\t' 'NF>1 {print $2}' "$sidecar" 2>/dev/null | sort | uniq -c \
+    | awk 'NF {printf "%s%s=%s", (NR>1?",":""), $2, $1}')
+  [ -n "$SESSIONS_BY_SOURCE" ] || SESSIONS_BY_SOURCE="none"
 }
 
 # ---- Empty-session filter: drop 0-turn shells before fanout ----
@@ -446,6 +1107,58 @@ report_complete() {
   [ -s "$REPORT_PATH" ] && grep -q 'autodream:open-questions=' "$REPORT_PATH" 2>/dev/null
 }
 
+# $1=adapter name $2=session path -> the project the session belongs to: the directory
+# directly under whichever of the adapter's roots holds it. Claude nests transcripts at
+# several depths under one bucket (<bucket>/<session>.jsonl, <bucket>/<session>/subagents/
+# agent-*.jsonl, <bucket>/<session>/subagents/workflows/wf_*/agent-*.jsonl), and a bucket
+# can itself be named "subagents", so no rule based on directory names finds the bucket at
+# every depth. A session under none of the adapter's roots falls back to its parent dir.
+session_project() {
+  local r rest
+  if [ -n "$1" ]; then
+    while IFS= read -r r; do
+      r=${r%/}
+      [ -n "$r" ] || continue
+      case $2 in
+        "$r"/*/*) rest=${2#"$r"/}; printf '%s' "${rest%%/*}"; return 0 ;;
+      esac
+    done < <(adapter_roots "$1")
+  fi
+  basename "$(dirname "$2")"
+}
+
+# $1=findings dir -> one hash<TAB>project<TAB>cwd row per session in sessions.txt.
+# Capture these before any model runs: findings must keep the project and cwd of the
+# actual transcript, even if L1 invents a session_path or rewrites the worklist.
+#
+# A cwd is unusable, and recorded as "?", when the adapter cannot resolve it (usually a
+# removed worktree), when it holds a tab or newline, or when its bucket is an encoded path
+# (starts with "-") that the cwd does not encode to. Slug buckets from
+# CLAUDE_CODE_PROJECT_DIR_NAME (owner-repo) skip that encoding check, because no cwd ever
+# encodes to a slug. An adapter cwd is always absolute, so it can never be "?" itself.
+session_rows() {
+  local dir=$1 s hash src proj cwd
+  # A missing worklist must not silently erase the provenance of every finding.
+  [ -r "$dir/sessions.txt" ] || return 1
+  while IFS= read -r s <&3; do
+    [ -n "$s" ] || continue
+    hash=$(session_hash "$s") || continue
+    src=$(awk -F'\t' -v h="$hash" '$1 == h { print $2; exit }' "$dir/sessions-source.txt" 2>/dev/null)
+    proj=$(session_project "$src" "$s")
+    case $proj in ''|*$'\t'*|*$'\n'*) continue ;; esac
+    cwd="?"
+    if [ -n "$src" ]; then
+      cwd=$(adapter_run "$src" project "$s" 2>/dev/null </dev/null) || cwd="?"
+      [ -n "$cwd" ] || cwd="?"
+    fi
+    case $cwd in *$'\t'*|*$'\n'*) cwd="?" ;; esac
+    case $proj in
+      -*) if [ "$cwd" != "?" ] && [ "$(encode_project "$cwd")" != "$proj" ]; then cwd="?"; fi ;;
+    esac
+    printf '%s\t%s\t%s\n' "$hash" "$proj" "$cwd"
+  done 3< "$dir/sessions.txt"
+}
+
 net_up() { # exit 0 if the API host is reachable (any HTTP code beats "000" = no route)
   local code
   code=$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' https://api.anthropic.com/ 2>/dev/null)
@@ -466,14 +1179,16 @@ l1_missing_count() { # count sessions in $SESSIONS_LIST that still have no findi
   local m=0 s h
   while IFS= read -r s; do
     [ -n "$s" ] || continue
-    h=$(printf "%s" "$s" | shasum -a 1 | cut -c1-12)
+    # An unvalidated hash here counts the session missing forever and the retry
+    # loop re-dispatches it every round.
+    h=$(session_hash "$s") || { m=$((m + 1)); continue; }
     jq -e .findings "$FINDINGS_DIR/$h.json" >/dev/null 2>&1 || m=$((m + 1))
   done < "$SESSIONS_LIST"
   printf '%s' "$m"
 }
 
 findings_json_count() {
-  find "$FINDINGS_DIR" -type f -name '*.json' ! -name '*.stats.json' 2>/dev/null \
+  find "$FINDINGS_DIR" -type f -name '*.json' ! -name '*.stats.json' ! -name 'memory-candidates.json' 2>/dev/null \
     | wc -l | tr -d ' '
 }
 
@@ -481,7 +1196,17 @@ compute_session_stats() {
   local session hash stats
   while IFS= read -r session; do
     [ -n "$session" ] || continue
-    hash=$(printf "%s" "$session" | shasum -a 1 | cut -c1-12)
+    # A hash failure means no sidecar is written for this session. It is NOT
+    # counted here: stats_sidecars_unparseable is initialised to 0 in the
+    # oversized-gate loop, which runs after this function, so an increment here
+    # would be wiped — and referencing it before that assignment trips `set -u`
+    # outright. That loop walks the same sessions.txt and counts this session
+    # there, which is why the #27 fix reads the list rather than the sidecar
+    # glob. Say it out loud here so the log names the session.
+    hash=$(session_hash "$session") || {
+      log "  WARNING: could not derive an artifact hash for $session; no stats sidecar will exist for it"
+      continue
+    }
     stats="$FINDINGS_DIR/$hash.stats.json"
     rm -f "$stats"
     if [ -x "$STATS" ] && "$STATS" "$session" "$stats" >/dev/null 2>&1 \
@@ -538,7 +1263,16 @@ compute_overlap_stats() {
 dispatch_l1() { # one parallel pass; idempotent worker → only the still-missing sessions run
   < "$SESSIONS_LIST" xargs -P "$FANOUT" -I {} bash -c '
     session="$1"
-    hash=$(printf "%s" "$session" | shasum -a 1 | cut -c1-12)
+    # Same contract as session_hash in the parent, inlined: this is a separate
+    # bash -c and the function is not in scope. No apostrophes anywhere in this
+    # body — one silently breaks the single-quoted block while bash -n still
+    # passes. An empty hash would send every worker to the same artifact.
+    hashout=$(printf "%s" "$session" | shasum -a 1 2>/dev/null) || exit 0
+    hash=${hashout:0:12}
+    case "$hash" in
+      [0123456789abcdef][0123456789abcdef][0123456789abcdef][0123456789abcdef][0123456789abcdef][0123456789abcdef][0123456789abcdef][0123456789abcdef][0123456789abcdef][0123456789abcdef][0123456789abcdef][0123456789abcdef]) : ;;
+      *) exit 0 ;;
+    esac
     output="$FINDINGS_DIR/$hash.json"
     errlog="$output.err"
 
@@ -564,7 +1298,7 @@ dispatch_l1() { # one parallel pass; idempotent worker → only the still-missin
     # Uses the mechanical stats sidecar (session-stats.sh, computed once during
     # enumeration) so gating never needs a model call of its own. Subagent
     # transcripts (isSidechain) and high tool-count sessions are never gated;
-    # they are legitimate work, just often short on user turns (see CLAUDE.md).
+    # they are legitimate work, just often short on user turns (see AGENTS.md).
     # An uncomputable duration (0, meaning zero or one timestamped line) never
     # gates on the duration rule alone; bias to triage when it cannot be
     # measured. A missing or unparseable stats sidecar also never gates; bias
@@ -677,15 +1411,30 @@ unassembled_dates() {
     [ -n "$d" ] || continue
     date_label=$(basename "$d")
     [ "$date_label" = "$TARGET_DATE" ] && continue
-    # Findings JSONs only. A dir holding nothing but *.stats.json sidecars was never
-    # triaged, so it has nothing to assemble and is not a failure.
-    found=$(find "$d" -maxdepth 1 -type f -name '*.json' ! -name '*.stats.json' 2>/dev/null | head -1)
-    [ -n "$found" ] || continue
+    # Findings JSONs, OR a run-stats.txt carrying `fatal:`. A dir holding nothing
+    # but *.stats.json sidecars was never triaged, so it has nothing to assemble
+    # and is not a failure — but a dir holding only a fatal marker is a night that
+    # died before it could triage anything, which is the case with no other
+    # surface at all: no report, no notification, and no findings to rebuild from.
+    found=$(find "$d" -maxdepth 1 -type f -name '*.json' ! -name '*.stats.json' ! -name 'memory-candidates.json' 2>/dev/null | head -1)
+    local why=""
+    if [ -z "$found" ]; then
+      # Commas out. PROMPT.md tells L2 to read this value as a comma-separated
+      # date list, and the likeliest reason embeds one: the adapter-loader refusal
+      # interpolates adapters_rejected, which is itself comma-separated, so
+      # `rejected: claude,evil` turned one dead date into three list entries.
+      why=$(sed -n 's/^fatal: //p' "$d/run-stats.txt" 2>/dev/null | head -1 | tr ',' ';')
+      [ -n "$why" ] || continue
+    fi
     report="$DREAMS_DIR/$date_label.md"
     if [ -s "$report" ] && grep -q 'autodream:open-questions=' "$report" 2>/dev/null; then
       continue
     fi
-    out="${out:+$out, }$date_label"
+    # Carry the REASON, not just the label. fatal_exit writes it into that date's
+    # run-stats.txt, and L2 only ever reads its OWN date's file — so without this
+    # the marker was written and never read by anything, and PROMPT.md's "A night
+    # that died" bullet was unreachable. The banner was the only working half.
+    out="${out:+$out, }$date_label${why:+ (${why})}"
   done < <(find "$root" -maxdepth 1 -type d -name '2[0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]' 2>/dev/null \
     | sort | tail -n "$window")
   printf '%s' "$out"
@@ -699,8 +1448,6 @@ run() {
   log "report:      $REPORT_PATH"
   log "fanout:      $FANOUT"
   log "claude:      $CLAUDE_BIN"
-
-  [ -x "$CLAUDE_BIN" ] || { log "FATAL: claude not at $CLAUDE_BIN"; exit 1; }
 
   # ---- Session roots (which $HOME/.claude*/projects dirs we scan) ----
   probe_roots
@@ -737,9 +1484,52 @@ run() {
     return 0
   fi
 
+  # The `claude` binary is checked by preflight below, NOT here. An earlier commit
+  # moved a `[ -x "$CLAUDE_BIN" ]` test to this spot and its message claimed that
+  # made preflight's --l2-bin branch reachable. It did not: this still ran first,
+  # and for an absolute path — which CLAUDE_BIN defaults to — `command -v` cannot
+  # fail once `[ -x ]` has passed, so the l2_engine branch stayed exercised only by
+  # its own test suite. Two gates for one dependency with the second one dead.
+  # Preflight owns it, so the check that reports the failure is the one that fires.
+
+  # ---- Preflight: the shared dependencies this script already assumes ----
+  # Before anything is ENUMERATED, because the dangerous one fails silently: with
+  # shasum absent the artifact hash assignment yields an empty string and every
+  # session in the night writes to the same findings filename. A run that got
+  # that far would produce one record where it should have produced a hundred
+  # and report success. Stopping here costs a night; continuing corrupts one.
+  #
+  # But BELOW the idempotency guard, which is not enumeration. Above it, a host
+  # missing one dependency turned an already-complete date from a one-second
+  # no-op into a failed run and an exit 1 on each of the four morning triggers.
+  #
+  # Gated on -r and invoked through bash, not gated on -x. install.sh's own
+  # comment worries about a distribution path that loses the exec bit — a zip, a
+  # restrictive umask — and an `[ -x ]` gate answers that by SKIPPING the check
+  # silently, which lands you back in exactly the empty-hash corruption preflight
+  # exists to stop. A present-but-unreadable preflight says so instead.
+  if [ -r "$PREFLIGHT" ]; then
+    # Pass the L2 engine. Without it L2_BIN was always empty, so preflight's
+    # l2_engine check could only ever fire from its own test suite — a dependency
+    # gate with a branch production never reached.
+    if ! bash "$PREFLIGHT" --l2-bin "$CLAUDE_BIN" 2>>"$RUN_LOG"; then
+      log_fatal "preflight failed; see the MISSING lines in this log. Nothing was enumerated."
+      fatal_exit
+      return 1
+    fi
+  else
+    log "WARNING: preflight not readable at $PREFLIGHT; the shared-dependency check did NOT run"
+  fi
+
   # ---- Enumerate sessions modified during the target day ----
   log "scanning for sessions modified between $TARGET_DATE and $NEXT_DATE..."
-  scan_roots
+  # Adapter refusals belong with this run's artifacts, not written back into the
+  # installed source tree where they persist across runs and vanish entirely on a
+  # read-only install.
+  export ADAPTERS_REJECT_LOG="$FINDINGS_DIR/.adapters-rejected"
+  : > "$ADAPTERS_REJECT_LOG" 2>/dev/null || true
+  scan_roots || { fatal_exit; return 1; }
+  build_source_sidecar || { fatal_exit; return 1; }
 
   # Exclude autodream's OWN headless worker/aggregator transcripts. New runs leave none
   # (--no-session-persistence), but runs predating that fix littered ~/.claude/projects/
@@ -751,7 +1541,12 @@ run() {
     cp "$SESSIONS_LIST.raw" "$SESSIONS_LIST"
   fi
   COUNT_AFTER_PRUNE=$(wc -l < "$SESSIONS_LIST" | tr -d ' ')
-  EXCLUDED=$(( RAW - COUNT_AFTER_PRUNE ))
+  # Subtract the collision drops first. They left the worklist BEFORE the
+  # self-prune ran, so charging them to EXCLUDED made a forced two-session
+  # collision report self_sessions_excluded: 2 — the report calling files
+  # "autodream-own" that were nothing of the kind.
+  EXCLUDED=$(( RAW - COLLIDED_DROPPED - COUNT_AFTER_PRUNE ))
+  [ "$EXCLUDED" -lt 0 ] && EXCLUDED=0
 
   # Drop 0-turn shells (auto-opened/aborted sessions with no user input) before fanout.
   # Independent of the self-prune above, so the two telemetry counts don't overlap.
@@ -767,15 +1562,120 @@ run() {
 
   if [ "$COUNT" -eq 0 ]; then
     log "no sessions to triage; writing stub report and exiting"
+    # A zero-session night is not always an empty night. Every session can be
+    # rejected for an unrepresentable path or dropped by collision handling, and
+    # this path used to return before run-stats.txt was written — so the report
+    # said "no sessions were modified" while the counters that would have
+    # contradicted it were never recorded anywhere. Say what was refused.
+    # HASH_COLLISIONS counts collision EVENTS and each drops at least two paths,
+    # so adding it to a path total understates the loss. Report the two
+    # separately rather than inventing a combined figure that is wrong.
+    local refused=$(( REJECTED_PATHS + HASH_COLLISIONS ))
+    {
+      printf '# Autodream run self-audit — %s\n' "$TARGET_DATE"
+      printf 'runner_commit: %s\n' "$RUNNER_COMMIT"
+      printf 'runner_dirty: %s\n' "$RUNNER_DIRTY"
+      printf 'sessions_found_raw: %s\n' "$RAW"
+      printf 'sessions_triaged: 0\n'
+      # Already computed above and previously omitted here. Without them a night
+      # where every session was a worker transcript or an empty shell looks
+      # identical to a night with no files at all.
+      printf 'self_sessions_excluded: %s\n' "$EXCLUDED"
+      printf 'sessions_skipped_empty: %s\n' "$SKIPPED_EMPTY"
+      printf 'sessions_rejected_path: %s\n' "$REJECTED_PATHS"
+      printf 'sessions_duplicate_path: %s\n' "$DUPLICATE_PATHS"
+      printf 'sessions_hash_collision: %s\n' "$HASH_COLLISIONS"
+      printf 'sessions_dropped_to_collision: %s\n' "$COLLIDED_DROPPED"
+      printf 'sidecar_stale_rows: %s\n' "$SIDECAR_STALE_ROWS"
+      # The shortfall counters belong here most of all: this block exists so a
+      # zero-triage night does not read as an empty one, and a partial walk or a
+      # regression to single-root scanning is exactly what would explain it.
+      printf 'roots_partially_enumerated: %s\n' "$PARTIAL_ROOTS"
+      printf 'roots_unavailable: %s\n' "$ROOTS_UNAVAILABLE"
+      printf 'roots_failed: %s\n' "$ROOTS_FAILED"
+      printf 'session_roots: %s\n' "$(( $(printf '%s' "$SESSION_ROOTS" | tr -cd ':' | wc -c) + 1 ))"
+      printf 'session_roots_list: %s\n' "$SESSION_ROOTS"
+      printf 'adapters_rejected: %s\n' "$(adapters_rejected 2>/dev/null)"
+      printf 'adapters_enabled: %s\n' "$(printf '%s' "$ENABLED_ADAPTERS" | tr ' ' ',' | sed 's/,$//')"
+      printf 'sessions_by_source: %s\n' "${SESSIONS_BY_SOURCE:-none}"
+      # The rest of the key set, emitted as real zeroes rather than omitted.
+      # PROMPT.md tells L2 that keys missing from run-stats.txt mean the runner
+      # predated the stat, so a zero-session night on CURRENT code produced a
+      # morning report blaming a stale checkout for the gap. A night with nothing
+      # to triage genuinely did zero L1 rounds and measured no overlap; saying so
+      # is different from not saying it.
+      # Key names copied from the full-run block below, not invented. The first
+      # draft of this emitted l1_missing, oversized_slimmed, overlap_pairs and
+      # elapsed — none of which that block writes — which would have left the real
+      # keys still missing while adding four L2 has never seen.
+      printf 'sessions_dropped_after_failures: 0\n'
+      printf 'gated: 0\n'
+      printf 'l1_rounds_max: %s\n' "${AUTODREAM_L1_ROUNDS:-5}"
+      printf 'l1_rounds_used: 0\n'
+      printf 'l1_findings_written: 0\n'
+      printf 'l1_missing_after_retries: 0\n'
+      printf 'l1_err_files: 0\n'
+      printf 'l1_findings_with_error: 0\n'
+      printf 'l1_sessions_already_done_at_start: 0\n'
+      printf 'l1_sessions_freshly_processed: 0\n'
+      printf 'l1_elapsed_seconds: 0\n'
+      printf 'oversized_total: 0\n'
+      printf 'oversized_errored: 0\n'
+      printf 'oversized_unmeasurable: %s\n' "${OVERSIZED_UNMEASURABLE:-0}"
+      printf 'stats_sidecars_unparseable: 0\n'
+      # A night with nothing to triage genuinely measured no overlap. That is not
+      # the same as the overlap pass having failed, and the zero counts below are
+      # the honest pair that goes with it.
+      printf 'overlap_measured: no\n'
+      printf 'overlap_events: 0\n'
+      printf 'sessions_with_overlap: 0\n'
+      # EMPTY, not `none`. PROMPT.md defines empty as "none" for this key and tells
+      # L2 to name the dates for any non-empty value, so `none` was handed to it as
+      # a date list to report.
+      printf 'unassembled_dates: %s\n' "${UNASSEMBLED:-}"
+    } > "$FINDINGS_DIR/run-stats.txt" 2>/dev/null || true
     cat > "$REPORT_PATH" <<EOF
 # Autodream — $TARGET_DATE
 
-No Claude Code sessions were modified on this date.
+No sessions were triaged on this date.
+
+$( if [ "${ROOTS_FAILED:-0}" -gt 0 ] || [ "${ROOTS_UNAVAILABLE:-0}" -gt 0 ]; then
+     # A failed root makes "no session files were modified" a claim this run
+     # cannot support: it did not read one of the stores it was meant to. The
+     # fatal for a single failed root was removed because on a single-root host
+     # that shape is a quiet date plus a transient find error, and losing the
+     # night is the wrong trade. That is only defensible while the stub refuses
+     # to state an empty night as fact.
+     # Both classes, and against ROOTS_CONFIGURED rather than ROOTS_SCANNED. A root
+     # that was never a directory — a `:` inside a SESSION_ROOTS entry, or a store
+     # that moved — was not read either, and it is missing from ROOTS_SCANNED
+     # entirely, so measuring against that under-reported how many were configured.
+     printf '%s of %s configured session root(s) were unreadable or failed to enumerate, so this run did not read the whole store. Nothing was triaged from what it did read. See roots_failed and roots_unavailable in run-stats.txt — whether this was an empty night is unknown.' \
+       "$(( ROOTS_FAILED + ROOTS_UNAVAILABLE ))" "$ROOTS_CONFIGURED"
+   elif [ "$RAW" -eq 0 ] && [ "$refused" -eq 0 ]; then
+     printf 'No session files were modified.'
+   else
+     # Refused paths never reach sessions.txt.raw, so they are NOT part of RAW.
+     # Folding them into "N session file(s) were modified" produced sentences
+     # like "0 session file(s) were modified ... 3 with an unrepresentable path".
+     # The two are counted separately because they are separate facts.
+     printf 'Nothing was triaged. %s session file(s) were enumerated (%s autodream-own, %s with no substantive turns); a further %s path(s) were refused before enumeration, and %s hash-collision event(s) each dropped two or more paths. See run-stats.txt — this is not an empty night.' \
+       "$RAW" "$EXCLUDED" "$SKIPPED_EMPTY" "$REJECTED_PATHS" "$HASH_COLLISIONS"
+   fi )
 
 (Generated $(date -u +%Y-%m-%dT%H:%M:%SZ))
 
 <!-- autodream:open-questions=0 -->
 EOF
+    # A question-free report still counts as a report. Without this the streak
+    # store would keep yesterday's questions alive across an empty night, and a
+    # question that reappeared two reports later would be called consecutive when
+    # it was not. The early return below is why this cannot live at the usual call
+    # site next to notify.sh.
+    if [ -x "$AUTODREAM_DIR/question-streaks.sh" ]; then
+      env AUTODREAM_DIR="$AUTODREAM_DIR" "$AUTODREAM_DIR/question-streaks.sh" update "$REPORT_PATH" "$FINDINGS_DIR" \
+        || log "question-streaks returned non-zero (continuing)"
+    fi
     return 0
   fi
 
@@ -788,6 +1688,12 @@ EOF
   # runs inside dispatch_l1 below — gated sessions' sidecars still exist and still
   # participate in overlap (see the comment in bin/overlap-stats.sh).
   compute_overlap_stats
+
+  # ---- Session provenance, fixed before any model runs ----
+  SESSION_ROWS=""
+  if ! SESSION_ROWS=$(session_rows "$FINDINGS_DIR"); then
+    log "WARNING: could not resolve session provenance; findings cannot be normalized"
+  fi
 
   # ---- Layer 1: haiku triage, parallel, retried across sleep/network gaps ----
   # Lean-query env (claude-cells internal/claude/query.go pattern): keep subscription
@@ -840,13 +1746,13 @@ EOF
   # writes a findings JSON carrying a top-level "error" key (empty findings). These are
   # NOT .json.err files, so l1_err_files=0 masked them — count them explicitly so the
   # self-audit can alarm on a high extraction-failure rate (slimming should drive →0).
-  L1_ERRORED=$(find "$FINDINGS_DIR" -type f -name '*.json' ! -name '*.stats.json' \
+  L1_ERRORED=$(find "$FINDINGS_DIR" -type f -name '*.json' ! -name '*.stats.json' ! -name 'memory-candidates.json' \
     -exec grep -l '"error":' {} + 2>/dev/null | wc -l | tr -d " ")
   # Noise-gated sessions: dispatch_l1 wrote a stub instead of calling the model
   # (see the "Noise gate" comment in dispatch_l1). Counted from the findings
   # dir rather than a shared counter, since each gate decision happens inside
   # an independent xargs subshell with no shared state to increment.
-  GATED=$(find "$FINDINGS_DIR" -type f -name '*.json' ! -name '*.stats.json' \
+  GATED=$(find "$FINDINGS_DIR" -type f -name '*.json' ! -name '*.stats.json' ! -name 'memory-candidates.json' \
     -exec grep -l '"skipped": *"below_noise_gate"' {} + 2>/dev/null | wc -l | tr -d " ")
   log "L1 done in ${L1_ELAPSED}s: $L1_OK done ($L1_ERRORED with errors, $GATED gated), $MISSING missing (.err files: $L1_FAIL)"
 
@@ -884,9 +1790,29 @@ EOF
   OVERSIZED_TOTAL=0
   OVERSIZED_ERRORED=0
   STATS_SIDECARS_UNPARSEABLE=0
+  OVERSIZED_UNMEASURABLE=0
   while IFS= read -r session; do
     [ -n "$session" ] || continue
-    hash=$(printf "%s" "$session" | shasum -a 1 | cut -c1-12)
+    # Same reasoning as compute_session_stats above: no hash means no sidecar to
+    # UNMEASURABLE: excluded from both counters, exactly as oversized-gate.sh:105
+    # does for the same case. An earlier version of this counted it in
+    # oversized_total but never in oversized_errored, and its comment claimed that
+    # dropping the session biased the #12 gate closed. The reasoning was inverted.
+    # The gate is oversized_errored / oversized_total, so padding the DENOMINATOR
+    # with sessions whose size was never read pushes the share DOWN and holds the
+    # gate closed; dropping one raises it. That version also made the runner and
+    # oversized-gate.sh disagree about the same findings dir — run.sh reporting
+    # `12 / 0` and GATE CLOSED where the gate tool reported 0 oversized and 12
+    # unmeasurable.
+    #
+    # Nor is it a sidecar parse failure: a session with no derivable key has no
+    # sidecar to parse. Conflating the two hid a keying failure inside a counter
+    # about file contents, so it gets its own.
+    hash=$(session_hash "$session") || {
+      OVERSIZED_UNMEASURABLE=$((OVERSIZED_UNMEASURABLE + 1))
+      log "  WARNING: could not derive an artifact hash for $session; excluded from the oversized gate as unmeasurable"
+      continue
+    }
     statsfile="$FINDINGS_DIR/$hash.stats.json"
     sz=""
     [ -s "$statsfile" ] && sz=$(jq -r '.transcript_bytes | numbers | floor' "$statsfile" 2>/dev/null)
@@ -918,24 +1844,30 @@ EOF
   # SESSION_TRIAGE.md asks the L1 worker to emit "project" by hand, and haiku does it
   # nondeterministically: one run surfaced the SAME -Users-sean dir as "-Users-sean",
   # "Users-sean" (dash stripped), and even the bare session UUID (filename, not dir).
-  # That splinters L2's per-project grouping. The encoded project dir is just the parent
-  # directory of the session JSONL, so derive it from each findings JSON's own
-  # session_path (already rewritten back to the real session after any slimming) and
-  # overwrite whatever the model guessed. Deterministic, idempotent on re-runs.
+  # That splinters L2's per-project grouping. The project is the bucket the runner already
+  # computed for each session in SESSION_ROWS (see session_rows), before L1 ran. Each findings
+  # file is looked up by its own name, the session hash, never by the session_path the model
+  # wrote, and its project field is overwritten. Deterministic, idempotent on re-runs.
   if command -v python3 >/dev/null 2>&1; then
-    python3 - "$FINDINGS_DIR" <<'PY'
+    SESSION_ROWS="$SESSION_ROWS" python3 - "$FINDINGS_DIR" <<'PY'
 import glob, json, os, sys
 findings_dir = sys.argv[1]
+projects = {}
+for row in os.environ.get("SESSION_ROWS", "").splitlines():
+    parts = row.split("\t")
+    if len(parts) >= 2 and parts[1]:
+        projects[parts[0]] = (parts[1], parts[2] if len(parts) >= 3 and parts[2] != "?" else None)
 fixed = 0
 for path in glob.glob(os.path.join(findings_dir, "*.json")):
+    provenance = projects.get(os.path.basename(path)[:-len(".json")])
+    if not provenance:
+        continue
+    proj, cwd = provenance
     try:
         with open(path) as f:
             data = json.load(f)
     except (ValueError, OSError):
         continue  # malformed JSON: leave for the triage-failures report section
-    sp = data.get("session_path")
-    if not sp:
-        continue
     changed = False
     # Skill calls are mechanical facts from the full transcript, not L1 guesses.
     # Apply on cached findings too so a report rebuild repairs old extraction.
@@ -948,8 +1880,10 @@ for path in glob.glob(os.path.join(findings_dir, "*.json")):
                 changed = True
     except (ValueError, OSError, AttributeError):
         pass  # Missing/legacy sidecars must not erase previously extracted skills.
-    proj = os.path.basename(os.path.dirname(sp))
-    if proj and data.get("project") != proj:
+    if data.get("cwd") != cwd:
+        data["cwd"] = cwd
+        changed = True
+    if data.get("project") != proj:
         data["project"] = proj
         changed = True
     if changed:
@@ -977,7 +1911,8 @@ PY
   # computing against RAW and subtracting the legitimate prunes, any session
   # lost to a filter mis-classification or silent worker death surfaces here.
   # Bounded at 0 in case of a counting bug in the prunes.
-  DROPPED_AFTER_FAILURES=$(( RAW - L1_OK - EXCLUDED - SKIPPED_EMPTY ))
+  # Collision drops are deliberate, not failures, and have their own key.
+  DROPPED_AFTER_FAILURES=$(( RAW - COLLIDED_DROPPED - L1_OK - EXCLUDED - SKIPPED_EMPTY ))
   [ "$DROPPED_AFTER_FAILURES" -lt 0 ] && DROPPED_AFTER_FAILURES=0
   L1_FRESHLY_PROCESSED=$(( L1_OK - L1_PRECACHED ))
   [ "$L1_FRESHLY_PROCESSED" -lt 0 ] && L1_FRESHLY_PROCESSED=0
@@ -1000,6 +1935,29 @@ PY
     printf 'session_roots: %s\n' "$SESSION_ROOT_COUNT"
     printf 'session_roots_list: %s\n' "$SESSION_ROOTS"
     printf 'sessions_found_raw: %s\n' "$RAW"
+    # Paths dropped at enumeration because a line-based sessions.txt cannot hold
+    # them. Recorded rather than left implicit: a nonzero value here means a real
+    # transcript exists that no report will ever mention, which is exactly the
+    # kind of silent shortfall this file exists to make visible.
+    printf 'sessions_rejected_path: %s\n' "$REJECTED_PATHS"
+    # Roots whose enumerator errored yet still returned paths. Nonzero means this
+    # night's corpus may be short by an unknown amount — not a failure, but not a
+    # clean read either, and the aggregator should not treat the totals as complete.
+    printf 'roots_partially_enumerated: %s\n' "$PARTIAL_ROOTS"
+    printf 'roots_unavailable: %s\n' "$ROOTS_UNAVAILABLE"
+    printf 'roots_failed: %s\n' "$ROOTS_FAILED"
+    # Which harnesses produced this night's corpus. A source that drops to zero
+    # on a day the user worked in it is the signal that its ingest broke, and
+    # that is invisible without a per-source count.
+    printf 'adapters_enabled: %s\n' "$(printf '%s' "$ENABLED_ADAPTERS" | tr ' ' ',' | sed 's/,$//')"
+    # Refusals that still left claude accepted are otherwise completely silent —
+    # a third-party adapter failing containment, a mismatched manifest name, a
+    # lost exec bit. Same silent-shortfall class as overlap_measured and
+    # stats_sidecars_unparseable: the value is that a zero here means something.
+    printf 'adapters_rejected: %s\n' "$(adapters_rejected 2>/dev/null)"
+    printf 'sessions_by_source: %s\n' "$SESSIONS_BY_SOURCE"
+    printf 'sessions_duplicate_path: %s\n' "$DUPLICATE_PATHS"
+    printf 'sessions_hash_collision: %s\n' "$HASH_COLLISIONS"
     printf 'self_sessions_excluded: %s\n' "$EXCLUDED"
     printf 'sessions_skipped_empty: %s\n' "$SKIPPED_EMPTY"
     printf 'sessions_triaged: %s\n' "$COUNT"
@@ -1011,6 +1969,8 @@ PY
     # vs.-raw denominator: a session lost to ANY path (prune mis-classification,
     # silent worker death, slim leftovers) shows up here. Always >= 0; if
     # nonzero, the aggregator should investigate even when l1_missing=0.
+    printf 'sessions_dropped_to_collision: %s\n' "$COLLIDED_DROPPED"
+    printf 'sidecar_stale_rows: %s\n' "$SIDECAR_STALE_ROWS"
     printf 'sessions_dropped_after_failures: %s\n' "$DROPPED_AFTER_FAILURES"
     printf 'l1_rounds_used: %s\n' "$round"
     printf 'l1_rounds_max: %s\n' "$L1_ROUNDS"
@@ -1020,6 +1980,7 @@ PY
     # for the gate meaning (M/N >= 5% over a trailing week opens issue #12).
     printf 'oversized_total: %s\n' "$OVERSIZED_TOTAL"
     printf 'oversized_errored: %s\n' "$OVERSIZED_ERRORED"
+    printf 'oversized_unmeasurable: %s\n' "${OVERSIZED_UNMEASURABLE:-0}"
     # Sidecar health (#27): how many of sessions_triaged had a stats sidecar that was
     # missing, empty, or carried no numeric transcript_bytes. Every consumer of the
     # sidecars degrades when this is non-zero — `gated` under-counts (an unreadable
@@ -1090,21 +2051,13 @@ PY
   # The aggregator call can also die to a mid-run sleep (this is what left exit 1 +
   # "no report" overnight). Retry until $REPORT_PATH is non-empty, waiting for the
   # network between attempts. Idempotent: a re-run overwrites the report harmlessly.
-  # Fable 5 is included in the subscription only until 2026-06-20; it moves to
-  # usage-based pricing on 2026-06-21, so revert to opus from that day on. The
-  # cutoff keys on the wall-clock run date (when the call is billed), not the
-  # target date being processed. Pin the exact "claude-fable-5[1m]" string: the
-  # CLI silently falls back to opus on unrecognized --model values (verified
-  # 2026-06-09 on 2.1.170), and bare "claude-fable-5" is one of those — only
-  # the alias "fable" and the [1m]-suffixed form actually serve Fable 5.
-  if [ -z "${AUTODREAM_L2_MODEL:-}" ]; then
-    if [ "$(date +%Y%m%d)" -ge 20260621 ]; then
-      AUTODREAM_L2_MODEL="claude-opus-4-7"
-    else
-      AUTODREAM_L2_MODEL="claude-fable-5[1m]"
-    fi
-  fi
-  log "L2 model: $AUTODREAM_L2_MODEL"
+  # Keep the approved effective default; the expired Fable date cutoff is gone.
+  # AUTODREAM_L2_MODEL still wins, including an exported override over the config.
+  # Record the requested model, not a claim about the CLI's actual selection:
+  # an unrecognized model name can silently fall back inside the CLI.
+  L2_MODEL="${AUTODREAM_L2_MODEL:-claude-opus-4-7}"
+  log "L2 model: $L2_MODEL"
+  printf 'l2_model: %s\n' "$L2_MODEL" >> "$FINDINGS_DIR/run-stats.txt"
 
   # ---- Move a stale report aside before attempting L2 ----
   # The only way to reach this line with $REPORT_PATH already non-empty is
@@ -1145,12 +2098,27 @@ PY
   L2_RC=1
   for attempt in $(seq 1 "$L2_ATTEMPTS"); do
     log "L2 aggregation attempt $attempt/$L2_ATTEMPTS..."
+    # Preserve proposals from an earlier run/attempt, but never pair them with a
+    # new report. A complete report must describe only its own candidate sidecar.
+    if [ -e "$FINDINGS_DIR/memory-candidates.json" ]; then
+      if STALE_CANDIDATES=$(mktemp "$FINDINGS_DIR/memory-candidates.json.stale-XXXXXX") \
+         && mv -f "$FINDINGS_DIR/memory-candidates.json" "$STALE_CANDIDATES"; then
+        log "moved earlier memory candidates aside before this attempt"
+      else
+        log "WARNING: could not move earlier memory candidates aside; stopping L2 rather than presenting stale proposals"
+        if [ -n "${STALE_CANDIDATES:-}" ] && [ -f "$STALE_CANDIDATES" ] && [ ! -s "$STALE_CANDIDATES" ]; then
+          rm -f "$STALE_CANDIDATES"
+        fi
+        L2_RC=1
+        break
+      fi
+    fi
     # Same literal-path framing and brace-group assembly as L1 (see the L1 worker
     # comment): keep the paths as literal data the aggregator hands to Glob/Read/Write,
     # and preserve the blank-line separator before PROMPT.md instead of letting a
     # `prompt=$(...)` capture strip it and glue the doc onto the report-path line.
     # Subshell so the cwd change (isolating the AI-title stub into $WORK_BUCKET, same
-    # as L1) is scoped to this call and doesn't leak into the notify/GC steps below.
+    # as L1) is scoped to this call and doesn't leak into the notification steps below.
     # $? after the subshell is the pipeline's exit (claude's), exactly as before.
     (
       cd "$WORK_DIR" 2>/dev/null || true
@@ -1161,13 +2129,13 @@ PY
       } | "$CLAUDE_BIN" \
         --print \
         --permission-mode bypassPermissions \
-        --model "$AUTODREAM_L2_MODEL" \
+        --model "$L2_MODEL" \
         --no-session-persistence \
         --tools Glob Read Write Edit \
         --disable-slash-commands \
         --strict-mcp-config \
         --settings '{"disableAllHooks":true}' \
-        --append-system-prompt "Headless aggregator. Read the per-session findings JSONs from the findings directory given on line 1 of the prompt, then write the report, via the Write tool, to the literal report path given on line 2. Those paths are literal strings, not shell variables — never \$-expand them. The only files you write are the report and memory-candidates.json in the findings directory; never edit MEMORY.md or any project file. Print report path and 3-line summary, then exit."
+        --append-system-prompt "Headless aggregator. Read the per-session findings JSONs from the findings directory given on line 1 of the prompt, then write the report, via the Write tool, to the literal report path given on line 2. Those paths are literal strings, not shell variables — never \$-expand them. The only files you write are the report and memory-candidates.json in the findings directory; never read or edit MEMORY.md or write any project file. Print report path and 3-line summary, then exit."
     )
 
     L2_RC=$?
@@ -1248,6 +2216,17 @@ PY
       "$AUTODREAM_DIR/notify.sh" "$REPORT_PATH" || log "notify step returned non-zero (continuing)"
     fi
 
+    # ---- Escalate questions this report has now asked N nights running ----
+    # After notify.sh, deliberately: the nightly banner goes out either way, and this adds
+    # a second, differently-worded one only when a question has gone stale. The failure it
+    # answers is not a missing signal but an unchanging one — the X bookmarks question was
+    # asked six times across ten failing nights, each night's banner identical to the last,
+    # and nothing moved until the user noticed by accident. Never fatal; it is bookkeeping.
+    if [ -x "$AUTODREAM_DIR/question-streaks.sh" ]; then
+      env AUTODREAM_DIR="$AUTODREAM_DIR" "$AUTODREAM_DIR/question-streaks.sh" update "$REPORT_PATH" "$FINDINGS_DIR" \
+        || log "question-streaks returned non-zero (continuing)"
+    fi
+
     # ---- Consume what L2 just read ----
     # Deliberately gated on a NON-EMPTY report, not merely an existing one. Archiving a
     # note or stamping a bookmark read after a run that produced nothing would throw away
@@ -1259,7 +2238,7 @@ PY
     # uses). collect() above is date-agnostic: it reads whatever is CURRENTLY in the
     # vault inbox and CURRENTLY unread, regardless of which date's findings dir it's
     # writing into. That's exactly right when TARGET_DATE is tonight's date — but
-    # CLAUDE.md documents reprocessing an old one (AUTODREAM_FORCE=1 run.sh
+    # AGENTS.md documents reprocessing an old one (AUTODREAM_FORCE=1 run.sh
     # 2026-05-29), and archive/mark-read have no idea the date is old: a successful
     # rebuild of 2026-05-29 would archive a note the user wrote THIS morning into
     # processed/2026-05-29/ and stamp today's unread bookmarks read, and tonight's real

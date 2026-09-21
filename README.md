@@ -35,7 +35,7 @@ ranked patterns, five open questions). The shape:
 ## Top patterns
 1. **Editing files before reading them** ×6  ·  high
    Six sessions hit "File has not been read yet". Read-before-Edit isn't sticking.
-   → Pin: always Read a file in-session before the first Edit.
+   → Memory candidate: always Read a file in-session before the first Edit.
 2. **$() in Bash triggers permission prompts** ×4  ·  medium
 3. **Assuming the host TZ is Pacific** ×2  ·  medium
 
@@ -72,7 +72,7 @@ cd ~/git/cc-autodream
 ./install.sh
 ```
 
-This symlinks `bin/*.sh` and `prompts/*.md` into `~/.claude/autodream/`, creates
+This symlinks `bin/*.sh`, `prompts/*.md` and the `adapters/` tree into `~/.claude/autodream/`, creates
 `~/.claude/dreams/`, and on macOS installs and bootstraps the nightly launchd
 schedule for you (auto-detecting your username, paths, and `claude`/`git` location —
 no plist editing). Because the scripts are symlinks, editing the repo copy takes
@@ -207,7 +207,7 @@ going after you disconnect:
 ## How it works (short version)
 
 Two layers: a cheap per-session pass (`haiku`) extracts structured findings from each
-transcript, then a single smarter pass (`opus`) ranks them across the whole day and
+transcript, then a single smarter pass (`claude-opus-4-7`, overridable with `AUTODREAM_L2_MODEL`) ranks them across the whole day and
 writes the report. It also diffs the upstream Claude Code changelog over the day so
 the report can flag releases that change how you work.
 
@@ -215,9 +215,24 @@ Everything lives on disk (findings JSON, the report, run logs, stats) and every 
 is idempotent, so you can rerun any date. Configuration knobs are documented in
 `bin/run.sh`'s header.
 
+Reading sessions is done through a **harness adapter**, so the runner does not know
+which agent produced a transcript. Today there is one; the seam is what lets a second
+arrive without forking the pipeline.
+
+- `adapters/<name>/` — one directory per harness: `manifest.json` (data, read with
+  `jq`, never sourced), `adapter.sh` (enumerate, normalize, project, stats, slim,
+  is-self, memory-root), and `facts.md` (the remedy vocabulary for that harness, so
+  a fix is phrased in terms the harness actually has) → `adapters/claude/facts.md`
+- `bin/adapters.sh` — adapter discovery, identity validation and containment
+- `bin/lib-project.sh` — the canonical project encoding and artifact hash every
+  adapter must agree on
+- `bin/preflight.sh` — the shared-dependency gate, run before anything is enumerated
+
 For the internals — data flow, file map, state layout, environment overrides, the
-lean-query pattern, and the "don't eat your own tail" self-pollution defenses — see
-**`codemaps/architecture.md`** and **`CLAUDE.md`**.
+lean-query pattern, the adapter contract, and the "don't eat your own tail"
+self-pollution defenses — see **`codemaps/architecture.md`**, **`AGENTS.md`**, and
+**`docs/design/unify-harness-adapters-2026-08-23.md`** for the subcommand table
+the adapter contract is defined by.
 
 ## Caveats
 

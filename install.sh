@@ -40,8 +40,33 @@ link() {
     echo "  WARNING: skipping $dst — source missing: $src" >&2
     return 0
   fi
+  # A real DIRECTORY at $dst is the case this guard used to miss, and adapters/
+  # is the first directory this script links. Without it `ln -s` silently creates
+  # $dst/<basename> — a nested adapters/adapters — while printing the same
+  # success line, after which the loader finds an empty directory, rejects the
+  # nested link on containment, and every nightly run fails.
   if [ -L "$dst" ] || [ -f "$dst" ]; then
     rm -f "$dst"
+  elif [ -d "$dst" ]; then
+    if [ -n "$(ls -A "$dst" 2>/dev/null)" ]; then
+      # A hard failure, not a warning. Warning and returning 0 reported a
+      # successful install while leaving adapters_root() pointed at a directory
+      # the loader accepts nothing from — which takes the "loader accepted no
+      # adapters" fatal on every nightly run afterward. A total outage behind one
+      # line of install output is the exact shape this whole change is built to
+      # refuse.
+      echo "  ERROR: $dst is a non-empty real directory; refusing to install over it." >&2
+      echo "         Move or remove it, then re-run install.sh." >&2
+      return 1
+    fi
+    rmdir "$dst" 2>/dev/null || {
+      # return 1, like the non-empty branch above and for the same reason: warning
+      # and continuing reports a successful install while adapters_root() resolves
+      # to a directory the loader accepts nothing from, which is the "loader
+      # accepted no adapters" fatal on every nightly run afterward.
+      echo "  ERROR: could not remove existing directory $dst; refusing to continue." >&2
+      return 1
+    }
   fi
   ln -s "$src" "$dst"
   echo "  $dst -> $src"
@@ -63,11 +88,25 @@ link "$REPO_DIR/bin/oversized-gate.sh"       "$TARGET/oversized-gate.sh"
 link "$REPO_DIR/bin/cookie-cadence.sh"       "$TARGET/cookie-cadence.sh"
 link "$REPO_DIR/bin/vault-notes.sh"          "$TARGET/vault-notes.sh"
 link "$REPO_DIR/bin/x-bookmarks.sh"          "$TARGET/x-bookmarks.sh"
+link "$REPO_DIR/bin/question-streaks.sh"     "$TARGET/question-streaks.sh"
 link "$REPO_DIR/bin/root-probe.sh"           "$TARGET/root-probe.sh"
+link "$REPO_DIR/bin/lib-project.sh"           "$TARGET/lib-project.sh"
+link "$REPO_DIR/bin/adapters.sh"              "$TARGET/adapters.sh"
+link "$REPO_DIR/bin/preflight.sh"             "$TARGET/preflight.sh"
+# The adapters TREE, not individual files: run.sh resolves adapters/<name>/adapter.sh
+# relative to the script dir, so the whole directory has to be reachable from the
+# install target. Without this the installed runner silently takes the legacy inline
+# enumeration path and gets no preflight, while still reporting adapters_enabled.
+link "$REPO_DIR/adapters"                     "$TARGET/adapters"
 link "$REPO_DIR/prompts/PROMPT.md"      "$TARGET/PROMPT.md"
 link "$REPO_DIR/prompts/SESSION_TRIAGE.md" "$TARGET/SESSION_TRIAGE.md"
 
 chmod +x "$REPO_DIR/bin/"*.sh
+# The adapters too. _adapter_ok requires -x on adapter.sh, and the loader treats a
+# non-executable adapter as a REFUSAL rather than as "adapters absent" — so a
+# distribution path that loses the exec bit (a zip, a restrictive umask) turns
+# into a hard FATAL nightly with no report instead of a degraded run.
+chmod +x "$REPO_DIR/adapters/"*/adapter.sh 2>/dev/null || true
 
 # --------------------------------------------------- session roots --
 # autodream scans every $HOME/.claude*/projects dir that has a session store. At

@@ -14,6 +14,11 @@
 #                            aggregator dying to a mid-run sleep). L1 is unaffected.
 #                            Pair with AUTODREAM_L2_ATTEMPTS=1 so the test doesn't
 #                            sit through the retry loop.
+#   MOCK_MODE=candidates     L2 writes a memory-candidates.json sidecar plus the report.
+#   MOCK_MODE=candidates_partial  as candidates, but the report is truncated.
+#   MOCK_MODE=l1_forged      L1 writes another session's path and cwd.
+#   MOCK_MODE=l1_tamper      L1 also rewrites the session worklist.
+#   MOCK_CANDIDATE_CWD       cwd proposed by the candidate mock.
 #   MOCK_CAPTURE_DIR=<dir>   dump each layer's stdin + argv to <dir>/l{1,2}-*.txt
 #                            so tests can assert on the exact prompt framing.
 #   MOCK_CALL_LOG=<file>     append the L1 output path for every invocation of
@@ -23,6 +28,7 @@
 
 input=$(cat)
 mode="${MOCK_MODE:-good}"
+
 line1=$(printf '%s\n' "$input" | sed -n '1p')
 line2=$(printf '%s\n' "$input" | sed -n '2p')
 
@@ -41,7 +47,12 @@ if printf '%s' "$line1" | grep -q '^Session transcript'; then
   write_badproject() { printf '{"session_path":"%s","project":"WRONG-PROJECT","turn_count":2,"tool_call_count":0,"tools_used":[],"skills_invoked":[],"models_used":[],"notable_initiatives":[],"findings":[]}' "$sess" > "$out"; }
   case "$mode" in
     l1_incomplete) : ;;                 # never write — simulates a worker that exits empty
-    l1_badproject) write_badproject ;;  # wrong project + real path — exercises normalization
+    l1_badproject|candidates|candidates_partial) write_badproject ;;
+    l1_forged|l1_tamper)
+      printf '{"session_path":"%s","cwd":"/forged/cwd","project":"WRONG-PROJECT","findings":[]}' "$MOCK_FORGED_SESSION" > "$out"
+      if [ "$mode" = "l1_tamper" ]; then
+        printf '%s\n' "$MOCK_FORGED_SESSION" > "$(dirname "$out")/sessions.txt"
+      fi ;;
     l1_flaky)                           # fail the first dispatch per session, succeed on retry
       if [ -f "$out.attempt" ]; then write_findings; else : > "$out.attempt"; fi ;;
     *) write_findings ;;
@@ -58,10 +69,18 @@ else
     echo "mock: aggregator failed" >&2
     exit 1
   fi
+  fdir=$(printf '%s' "$line1" | sed 's/^Findings directory to aggregate (literal absolute path): //')
+  case "$mode" in
+    candidates|candidates_partial)
+      jq -cn --arg cwd "$MOCK_CANDIDATE_CWD" \
+        '[{cwd:$cwd,content:"Mock lesson",kind:"correction",evidence:["fixture-session"]}]' \
+        > "$fdir/memory-candidates.json" ;;
+    *) printf '[]\n' > "$fdir/memory-candidates.json" ;;
+  esac
   # l2_partial: a NON-EMPTY report with no open-questions marker — what a mid-write kill
   # leaves behind. `-s` cannot tell this from a good report, which is why run.sh checks
   # for the marker instead.
-  if [ "$mode" = "l2_partial" ]; then
+  if [ "$mode" = "l2_partial" ] || [ "$mode" = "candidates_partial" ]; then
     printf '# Autodream — mock\n\n## Top patterns\n\n1. truncated mid-w' > "$rep"
     echo "mock: partial write"
     exit 0

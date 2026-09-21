@@ -22,8 +22,23 @@
 
 set -u
 
-REPORT="${1:?Usage: notify.sh <report.md>}"
-DATE=$(basename "$REPORT" .md)
+# Two forms. The normal one takes a report. The failure one exists because a run
+# that DIES never writes a report, and until it had a surface a failed night was
+# completely silent: no report, no banner, and nothing in run-stats a later run
+# could read — and for a persistent cause (a lost exec bit, a dependency off the
+# launchd PATH) no later run ever succeeds to read it.
+#
+#   notify.sh --failure <date> <reason>
+FAILURE_MODE=0
+if [ "${1:-}" = "--failure" ]; then
+  FAILURE_MODE=1
+  DATE="${2:?Usage: notify.sh --failure <date> <reason>}"
+  FAIL_REASON="${3:-the run stopped before it produced a report}"
+  REPORT=""
+else
+  REPORT="${1:?Usage: notify.sh <report.md>  |  notify.sh --failure <date> <reason>}"
+  DATE=$(basename "$REPORT" .md)
+fi
 AUTODREAM_DIR="${AUTODREAM_DIR:-$HOME/.claude/autodream}"
 INBOX_DIR="$AUTODREAM_DIR/inbox"
 # How the inbox file gets opened. This is a shell snippet, not a binary path, so an
@@ -50,6 +65,40 @@ NOTIFIER=""
 [ -x "$BRANDED" ] && NOTIFIER="$BRANDED" || NOTIFIER="$(command -v terminal-notifier || true)"
 
 mkdir -p "$INBOX_DIR"
+
+if [ "$FAILURE_MODE" = "1" ]; then
+  # Reuses the notifier resolved above and stops before everything below, all of
+  # which reads a report that does not exist. Always exits 0: a notification that
+  # cannot be posted must not become a second failure on top of the first.
+  msg="Autodream FAILED for $DATE — $FAIL_REASON"
+  # Honour the dry-run contract, which this branch returned before reaching. Its
+  # documented promise is "writes no inbox file, posts no banner, opens nothing",
+  # and anyone exercising the new failure path with it set got a live banner and a
+  # stray inbox file.
+  if [ "${AUTODREAM_NOTIFY_DRYRUN:-0}" = "1" ]; then
+    echo "notify.sh: DRY RUN — would post a failure banner for $DATE: $FAIL_REASON"
+    exit 0
+  fi
+  posted=0
+  if [ -n "$NOTIFIER" ]; then
+    "$NOTIFIER" -title "Autodream — $DATE" -message "FAILED: $FAIL_REASON" \
+      -group "autodream-fail-$DATE" >/dev/null 2>&1 \
+      && { echo "notify.sh: posted failure banner for $DATE"; posted=1; }
+  fi
+  if [ "$posted" = "0" ] && command -v osascript >/dev/null 2>&1; then
+    # Escape before interpolating into an AppleScript string literal. A reason
+    # containing a `"` — and several do, since they quote paths and adapter lists —
+    # made osascript a syntax error, whose stderr this branch drops, so the one
+    # surface a dead run has failed silently on exactly those runs.
+    osa_reason=$(printf '%s' "$FAIL_REASON" | sed 's/\\/\\\\/g; s/"/\\"/g')
+    osascript -e "display notification \"FAILED: $osa_reason\" with title \"Autodream — $DATE\"" \
+      >/dev/null 2>&1 \
+      && { echo "notify.sh: posted osascript failure banner for $DATE"; posted=1; }
+  fi
+  [ "$posted" = "1" ] || echo "notify.sh: could not post a failure banner for $DATE (continuing)"
+  printf '%s\n' "$msg" > "$INBOX_DIR/$DATE-FAILED.txt" 2>/dev/null || true
+  exit 0
+fi
 
 [ -f "$REPORT" ] || { echo "notify.sh: no such report: $REPORT" >&2; exit 1; }
 

@@ -36,6 +36,22 @@ jobs:
       - name: run-all
         run: bash tests/run-all.sh
 
+      # Every suite runs here. The adapter suites were added without being wired
+      # into run-all.sh or this workflow, so 314 green assertions did not include
+      # any of them and a regression in adapter containment, the manifest name
+      # check, or any adapter subcommand would have shipped clean. A suite nobody
+      # runs is documentation, not a test.
+      - name: unit suites
+        run: |
+          rc=0
+          for t in tests/lib-project.sh tests/preflight.sh tests/adapters.sh \
+                   tests/adapter-claude.sh tests/adapter-contract.sh \
+                   tests/slim-transcript.sh tests/promote.sh; do
+            echo "== $t"
+            bash "$t" || rc=1
+          done
+          exit $rc
+
       - name: cookie-cadence
         run: bash tests/cookie-cadence.sh
 
@@ -55,7 +71,7 @@ jobs:
       # cannot afford a swallowed exit code, and that is the class shellcheck
       # actually catches (SC2164, SC2155).
       - name: shellcheck bin + install
-        run: shellcheck --severity=warning bin/*.sh install.sh
+        run: shellcheck --severity=warning bin/*.sh adapters/*/adapter.sh install.sh
 
       # Test code is held at `error` only. tests/run-all.sh has ~24 SC2155
       # hits from `local x=$(cmd)` in assertion helpers, where masking a return
