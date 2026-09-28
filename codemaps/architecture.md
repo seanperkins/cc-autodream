@@ -24,7 +24,7 @@ bin/run.sh  TARGET_DATE
       │     └─ prune-self-sessions.sh --filter                → sessions.txt   (drops autodream's own)
       │
       ├─ L1 retry loop (AUTODREAM_L1_ROUNDS):
-      │     dispatch_l1: xargs -P FANOUT → claude --print (haiku, lean flags) per session
+      │     dispatch_l1: xargs -P FANOUT → claude --print (claude-sonnet-5-5, low effort, lean flags) per session
       │       reads session .jsonl, writes findings/<date>/<sha>.json   (idempotent; .err on fail)
       │     l1_missing_count → wait_for_network → retry the still-missing
       │
@@ -32,7 +32,7 @@ bin/run.sh  TARGET_DATE
       ├─ changelog_window()      → findings/<date>/changelog-window.md  (git log -p on claude-code CHANGELOG)
       │
       ├─ L2 retry loop (AUTODREAM_L2_ATTEMPTS):
-      │     claude --print (claude-opus-4-7 or AUTODREAM_L2_MODEL, lean flags) with PROMPT.md
+      │     claude --print (claude-opus-5-5 or AUTODREAM_L2_MODEL, lean flags) with PROMPT.md
       │       reads per-session findings + changelog-window.md + run-stats.txt
       │       writes memory-candidates.json first, then dreams/<date>.md (proposals only)
       │

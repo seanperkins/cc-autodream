@@ -727,14 +727,14 @@ test_no_sessions(){
 
 # ---- The approved L2 model stays stable; environment overrides still win ----
 test_l2_uses_the_default_model(){
-  echo "# L2: claude-opus-4-7 remains the effective default; L1 stays haiku"
+  echo "# L2: claude-opus-5-5 is the effective default; L1 is claude-sonnet-5-5"
   local root; root=$(setup_env); mk_session "$root" sess1
   export FANOUT=1 MOCK_CAPTURE_DIR="$root/cap" AUTODREAM_L2_MODEL=""
   run_dream "$root"
   unset FANOUT MOCK_CAPTURE_DIR AUTODREAM_L2_MODEL
-  assert_grep "$root/cap/l2-args.txt" '^claude-opus-4-7$' "L2 requests the approved model"
-  assert_grep "$root/cap/l1-args.txt" '^claude-haiku-4-5$' "L1 preserves its pre-update model"
-  assert_grep "$(fdir "$root")/run-stats.txt" '^l2_model: claude-opus-4-7$' "the report records the requested model"
+  assert_grep "$root/cap/l2-args.txt" '^claude-opus-5-5$' "L2 requests the approved model"
+  assert_grep "$root/cap/l1-args.txt" '^claude-sonnet-5-5$' "L1 requests Sonnet 5.5"
+  assert_grep "$(fdir "$root")/run-stats.txt" '^l2_model: claude-opus-5-5$' "the report records the requested model"
   assert_nonempty "$root/dreams/$DATE.md" "the report lands"
   rm -rf "$root"
 }

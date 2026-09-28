@@ -2,9 +2,9 @@
 # Autodream runner — invoked by launchd at ~3am local time.
 #
 # Two-layer pipeline:
-#   L1: For each of yesterday's session JSONLs, spawn a parallel `claude --model haiku`
+#   L1: For each of yesterday's session JSONLs, spawn a parallel `claude --model claude-sonnet-5-5`
 #       running SESSION_TRIAGE.md → writes one findings.json per session.
-#   L2: One `claude --model claude-opus-4-7` running PROMPT.md → reads all findings JSONs,
+#   L2: One `claude --model claude-opus-5-5` running PROMPT.md → reads all findings JSONs,
 #       writes $DREAMS_DIR/YYYY-MM-DD.md plus a memory-candidates.json sidecar
 #       (proposals only; bin/promote.sh writes accepted ones to Mnemopi).
 #
@@ -34,7 +34,7 @@
 #   AUTODREAM_NETCHECK   set 0 to skip waiting-for-network on retry  default: 1
 #   AUTODREAM_FORCE      set 1 to rebuild even if a report exists    default: 0
 #   AUTODREAM_SLIM_BYTES sessions larger than this are slimmed for L1  default: 262144
-#   AUTODREAM_L2_MODEL   override the L2 aggregator model            default: claude-opus-4-7
+#   AUTODREAM_L2_MODEL   override the L2 aggregator model            default: claude-opus-5-5
 #   AUTODREAM_MIN_USER_TURNS  noise-gate floor on user_message_count  default: 2
 #   AUTODREAM_MIN_MINUTES     noise-gate floor on duration_minutes    default: 1
 #   AUTODREAM_STATS_BIN       override the resolved session-stats.sh path, authoritative
@@ -1353,7 +1353,8 @@ dispatch_l1() { # one parallel pass; idempotent worker → only the still-missin
     } | "$CLAUDE_BIN" \
       --print \
       --permission-mode bypassPermissions \
-      --model claude-haiku-4-5 \
+      --model claude-sonnet-5-5 \
+      --effort low \
       --no-session-persistence \
       --tools Read Write \
       --disable-slash-commands \
@@ -1695,7 +1696,7 @@ EOF
     log "WARNING: could not resolve session provenance; findings cannot be normalized"
   fi
 
-  # ---- Layer 1: haiku triage, parallel, retried across sleep/network gaps ----
+  # ---- Layer 1: sonnet triage, parallel, retried across sleep/network gaps ----
   # Lean-query env (claude-cells internal/claude/query.go pattern): keep subscription
   # OAuth auth but strip per-call bloat — no CLAUDE.md auto-load, no telemetry/error
   # reporting. Combined with the per-call flags (--no-session-persistence, --tools,
@@ -1841,7 +1842,7 @@ EOF
   fi
 
   # ---- Normalize the project field deterministically from the session path ----
-  # SESSION_TRIAGE.md asks the L1 worker to emit "project" by hand, and haiku does it
+  # SESSION_TRIAGE.md asks the L1 worker to emit "project" by hand, and the worker does it
   # nondeterministically: one run surfaced the SAME -Users-sean dir as "-Users-sean",
   # "Users-sean" (dash stripped), and even the bare session UUID (filename, not dir).
   # That splinters L2's per-project grouping. The project is the bucket the runner already
@@ -2055,7 +2056,7 @@ PY
   # AUTODREAM_L2_MODEL still wins, including an exported override over the config.
   # Record the requested model, not a claim about the CLI's actual selection:
   # an unrecognized model name can silently fall back inside the CLI.
-  L2_MODEL="${AUTODREAM_L2_MODEL:-claude-opus-4-7}"
+  L2_MODEL="${AUTODREAM_L2_MODEL:-claude-opus-5-5}"
   log "L2 model: $L2_MODEL"
   printf 'l2_model: %s\n' "$L2_MODEL" >> "$FINDINGS_DIR/run-stats.txt"
 
