@@ -10,3 +10,7 @@ inbox/
 # every repo-wide grep matched them dozens of times over.
 .tmp/
 .claude/settings.local.json
+
+# Model benchmark: frozen session transcripts and run output. Session content, never committed.
+bench/data/
+__pycache__/
