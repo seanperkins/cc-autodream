@@ -24,7 +24,7 @@ from pathlib import Path
 
 from common import BENCH_DIR, DATA_DIR, append_jsonl, load_config, read_jsonl
 
-DRIVER = BENCH_DIR / "run-one-l1.sh"
+DRIVERS = {"claude": BENCH_DIR / "run-one-l1.sh", "codex": BENCH_DIR / "run-one-l1-codex.sh"}
 RATE_LIMIT = re.compile(r"rate.?limit|usage limit|overloaded|\b429\b|\b529\b", re.I)
 USAGE_KEYS = ("input_tokens", "output_tokens", "cache_creation_input_tokens",
               "cache_read_input_tokens")
@@ -84,11 +84,42 @@ def _load_json(path):
         return None
 
 
+def load_codex_events(path):
+    """Fold `codex exec --json` events into a CLI-result-shaped dict. Codex reports token
+    usage in the last turn.completed event and no served model, so the caller marks the
+    served model unverified. Returns None when there is no usable usage event."""
+    usage = None
+    try:
+        lines = Path(path).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        try:
+            e = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(e, dict) and e.get("type") == "turn.completed" and isinstance(e.get("usage"), dict):
+            usage = e["usage"]
+    if usage is None:
+        return None
+    return {"usage": {
+        "input_tokens": usage.get("input_tokens", 0),
+        "output_tokens": usage.get("output_tokens", 0),
+        "cache_read_input_tokens": usage.get("cached_input_tokens", 0),
+        "cache_creation_input_tokens": usage.get("cache_write_input_tokens", 0),
+    }}
+
+
+def load_cli(path, harness):
+    return load_codex_events(path) if harness == "codex" else _load_json(path)
+
+
 class Ctx:
     def __init__(self, a, data_dir, run_dir, cfg):
         self.model, self.effort = a.model, a.effort
         self.reps, self.timeout = a.reps, a.timeout
         self.claude_bin = a.claude_bin
+        self.harness, self.codex_bin = a.harness, a.codex_bin
         self.max_attempts = cfg["run"]["max_attempts"]
         self.backoff_base = a.backoff_base
         self.data, self.run_dir = data_dir, run_dir
@@ -109,9 +140,9 @@ def run_attempt(ctx, case, rep):
     for p in (findings, cli_json):
         p.parent.mkdir(parents=True, exist_ok=True)
         p.unlink(missing_ok=True)
-    cmd = ["bash", str(DRIVER), ctx.model, ctx.effort, str(findings),
+    cmd = ["bash", str(DRIVERS[ctx.harness]), ctx.model, ctx.effort, str(findings),
            str(ctx.data / case["transcript"]), str(ctx.data / case["stats"]), str(cli_json)]
-    env = dict(os.environ, CLAUDE_BIN=ctx.claude_bin)
+    env = dict(os.environ, CLAUDE_BIN=ctx.claude_bin, CODEX_BIN=ctx.codex_bin)
     t0 = time.monotonic()
     proc = subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                             text=True, start_new_session=True)
@@ -123,9 +154,9 @@ def run_attempt(ctx, case, rep):
         os.killpg(proc.pid, signal.SIGKILL)  # the whole group: bash, the CLI, its children
         _, err = proc.communicate()
     latency = time.monotonic() - t0
-    cli = _load_json(cli_json)
+    cli = load_cli(cli_json, ctx.harness)
     failure = classify_failure(proc.returncode, err or "", cli, timed_out)
-    served, ok = served_model_check(cli, ctx.model)
+    served, ok = (None, None) if ctx.harness == "codex" else served_model_check(cli, ctx.model)
     if failure is None and ok is False:
         failure = "model_mismatch"
     return {"failure": failure, "cli": cli, "latency_s": round(latency, 2), "served": served,
@@ -153,7 +184,7 @@ def run_job(ctx, case, rep):
     cli = a["cli"] if isinstance(a["cli"], dict) else {}
     ctx.write("results.jsonl", {
         "case_id": cid, "rep": rep, "requested_model": ctx.model, "effort": ctx.effort,
-        "served_model": a["served"], "served_verified": a["served_ok"],
+        "harness": ctx.harness, "served_model": a["served"], "served_verified": a["served_ok"],
         "status": findings_status(a["findings"]),
         "findings_path": str(a["findings"].relative_to(ctx.run_dir)),
         "usage": {k: (cli.get("usage") or {}).get(k, 0) for k in USAGE_KEYS},
@@ -175,6 +206,8 @@ def parse_args(argv):
     ap.add_argument("--cases", default=str(DATA_DIR / "cases.jsonl"))
     ap.add_argument("--out", default=str(DATA_DIR / "runs"))
     ap.add_argument("--claude-bin", default=os.environ.get("CLAUDE_BIN") or str(Path.home() / ".local/bin/claude"))
+    ap.add_argument("--harness", choices=["claude", "codex"], default="claude")
+    ap.add_argument("--codex-bin", default=os.environ.get("CODEX_BIN") or "codex")
     ap.add_argument("--dry-run", action="store_true", help="print the plan; make no calls")
     ap.add_argument("--confirm", action="store_true", help="required to make real calls")
     return ap.parse_args(argv)
@@ -194,7 +227,7 @@ def main(argv=None):
     ctx = Ctx(a, Path(a.cases).parent, run_dir, cfg)
     done = {(r["case_id"], r["rep"]) for r in read_jsonl(run_dir / "results.jsonl")}
     todo = [(c, rep) for c in cases for rep in range(a.reps) if (c["case_id"], rep) not in done]
-    print(f"plan: {a.model} effort={a.effort or 'default'} | {len(cases)} cases x {a.reps} reps"
+    print(f"plan: {a.harness}/{a.model} effort={a.effort or 'default'} | {len(cases)} cases x {a.reps} reps"
           f" = {len(cases) * a.reps} calls, {len(todo)} to run ({len(done)} already done)"
           f" | concurrency {a.concurrency}, timeout {a.timeout}s")
     print("These calls run on your Claude subscription and count against its usage cap.")
