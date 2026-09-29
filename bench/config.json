@@ -1,0 +1,43 @@
+{
+  "gate": {
+    "validity_min": 0.98,
+    "authoritative_min": 0.95,
+    "hallucination_max": 0.1,
+    "abstain_excess_max": 0.1
+  },
+  "grounding": {
+    "min_ratio": 0.85
+  },
+  "run": {
+    "concurrency": 2,
+    "timeout_s": 900,
+    "max_attempts": 3,
+    "backoff_base_s": 30
+  },
+  "candidates": [
+    {
+      "model": "claude-haiku-4-5",
+      "effort": ""
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "effort": "low"
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "effort": "medium"
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "effort": "high"
+    },
+    {
+      "model": "claude-opus-5-5",
+      "effort": "medium"
+    },
+    {
+      "model": "claude-fable-5-1",
+      "effort": "high"
+    }
+  ]
+}
