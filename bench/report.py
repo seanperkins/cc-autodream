@@ -56,6 +56,45 @@ def row(s):
     ]) + " |"
 
 
+REF_NOTES = [
+    "Agreement is measured against the frozen reference (majority of the reference models, adjudicated by "
+    "you). Findings: recall is the share of the reference's confirmed findings the candidate reported; "
+    "precision (strict) counts a candidate finding only if it matches a confirmed one, precision (lenient) "
+    "also accepts findings only one reference model reported.",
+    "Goal and finding matches are judged by a model that is never the candidate. `unjudged` counts "
+    "comparisons whose judge call failed; they are excluded, never guessed.",
+]
+
+
+def _pct(r):
+    return "n/a" if r is None or r["rate"] is None else f"{r['rate'] * 100:.0f}% (n={r['n']})"
+
+
+def ref_row(s):
+    m = s["reference_metrics"]
+    d = m["outcome_distance"]
+    return "| " + " | ".join([
+        s["label"], str(m["cases_scored"]), _pct(m["outcome_match"]),
+        "n/a" if d["mean"] is None else f"{d['mean']:.2f} (n={d['n']})",
+        _pct(m["goal_same"]), _pct(m["goal_same_or_partial"]), _pct(m["finding_recall"]),
+        f"{_pct(m['finding_precision_strict'])} / {_pct(m['finding_precision_lenient'])}",
+        _pct(m["instruction_recall"]), _pct(m["instruction_precision"]), str(m["unjudged"]),
+    ]) + " |"
+
+
+def render_reference(summaries):
+    graded = [s for s in summaries if s.get("reference_metrics")]
+    if not graded:
+        return []
+    head = ("| candidate | cases scored | outcome match | mean outcome distance | goal same | "
+            "goal same or partial | finding recall | finding precision (strict / lenient) | "
+            "instruction recall | instruction precision | unjudged |")
+    lines = ["", "## Agreement with the reference", "", head, "|" + "---|" * 11]
+    lines += [ref_row(s) for s in sorted(graded, key=lambda s: s["label"])]
+    lines += [""] + [f"- {n}" for n in REF_NOTES]
+    return lines
+
+
 def render(summaries):
     order = sorted(summaries, key=lambda s: (not s["metrics"]["gate"]["pass"], s["label"]))
     head = ("| candidate | gate | rows | validity | authoritative | hallucinated evidence | "
@@ -64,7 +103,12 @@ def render(summaries):
     sep = "|" + "---|" * 14
     lines = ["# L1 benchmark (Phase 1: objective checks)", "", head, sep]
     lines += [row(s) for s in order]
-    lines += ["", "## Notes", ""] + [f"- {n}" for n in NOTES]
+    notes = list(NOTES)
+    if summaries and all(s.get("abstain_source") == "reference" for s in summaries):
+        notes[0] = ("`abstain_excess` is measured against the frozen reference outcome for the same session "
+                    "(cases the reference left undecided or excluded are not counted).")
+    lines += render_reference(summaries)
+    lines += ["", "## Notes", ""] + [f"- {n}" for n in notes]
     return "\n".join(lines) + "\n"
 
 
