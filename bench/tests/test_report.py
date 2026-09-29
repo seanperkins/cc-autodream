@@ -66,5 +66,45 @@ class Render(unittest.TestCase):
             self.assertEqual(report.main(["--runs", str(runs / "ungraded"), "--out", str(out)]), 2)
 
 
+def with_reference(label, passed=True):
+    s = summary(label, passed)
+    s["abstain_source"] = "reference"
+    s["reference_metrics"] = {
+        "cases_scored": 50, "outcome_match": rate(40, 50), "outcome_distance": {"mean": 0.5, "n": 20},
+        "goal_same": rate(30, 45), "goal_same_or_partial": rate(40, 45), "finding_recall": rate(6, 10),
+        "finding_precision_strict": rate(6, 12), "finding_precision_lenient": rate(9, 12),
+        "instruction_recall": rate(0, 0), "instruction_precision": rate(1, 2), "unjudged": 3,
+        "cases_excluded": 4}
+    return s
+
+
+class ReferenceTable(unittest.TestCase):
+    def test_no_reference_metrics_means_no_agreement_table(self):
+        md = report.render([summary("a@high", True)])
+        self.assertNotIn("Agreement with the reference", md)
+        self.assertIn("stand-in", md)
+
+    def test_agreement_table_shows_every_metric_with_denominators(self):
+        md = report.render([with_reference("a@high")])
+        self.assertIn("## Agreement with the reference", md)
+        row = next(l for l in md.splitlines() if l.startswith("| a@high") and "80% (n=50)" in l)
+        for cell in ("80% (n=50)", "0.50 (n=20)", "67% (n=45)", "89% (n=45)", "60% (n=10)",
+                     "50% (n=12) / 75% (n=12)", "n/a", "50% (n=2)", "| 3 |"):
+            self.assertIn(cell, row)
+
+    def test_depth_note_names_the_reference_when_every_run_used_it(self):
+        md = report.render([with_reference("a@high"), with_reference("b@low", False)])
+        self.assertNotIn("stand-in", md)
+        self.assertIn("frozen reference outcome", md)
+        mixed = report.render([with_reference("a@high"), summary("b@low", True)])
+        self.assertIn("stand-in", mixed)
+
+    def test_runs_without_reference_metrics_are_left_out_of_the_agreement_table(self):
+        md = report.render([with_reference("a@high"), summary("b@low", True)])
+        table = md.split("## Agreement with the reference")[1].split("## Notes")[0]
+        self.assertIn("a@high", table)
+        self.assertNotIn("b@low", table)
+
+
 if __name__ == "__main__":
     unittest.main()
