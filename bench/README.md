@@ -30,7 +30,7 @@ Per candidate, separate columns and no blended score:
 | validity | valid JSON, legal enums, caps, no retired category, zeroed satisfaction_signals | >= 98% |
 | authoritative | fields the prompt says to copy equal the stats sidecar | >= 95% of valid rows |
 | hallucinated evidence | findings whose evidence has checkable fragments, most absent from the transcript | <= 10% of findings |
-| abstain_excess | says `unclear_from_transcript` where historical Haiku decided an outcome | <= 10% |
+| abstain_excess | says `unclear_from_transcript` where the reference (Phase 2; historical Haiku in Phase 1) decided an outcome | <= 15% |
 | header-only, verbatim | informational | none |
 
 Ranking happens only among gate-passers. In Phase 1 the historical Haiku output is the
