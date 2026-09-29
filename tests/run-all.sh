@@ -1737,6 +1737,13 @@ test_l1_model_and_effort_overrides(){
 
 test_l1_invocation_argv_and_prompt
 test_l1_model_and_effort_overrides
+
+test_l1_overrides_are_documented_in_the_header(){
+  echo "# L1: the overrides are documented in run.sh's header (the README points there)"
+  assert_grep "$RUN" '^#   AUTODREAM_L1_MODEL ' "header documents AUTODREAM_L1_MODEL"
+  assert_grep "$RUN" '^#   AUTODREAM_L1_EFFORT ' "header documents AUTODREAM_L1_EFFORT"
+}
+test_l1_overrides_are_documented_in_the_header
 test_framing
 test_changelog
 test_prune_helper

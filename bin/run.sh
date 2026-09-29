@@ -34,6 +34,9 @@
 #   AUTODREAM_NETCHECK   set 0 to skip waiting-for-network on retry  default: 1
 #   AUTODREAM_FORCE      set 1 to rebuild even if a report exists    default: 0
 #   AUTODREAM_SLIM_BYTES sessions larger than this are slimmed for L1  default: 262144
+#   AUTODREAM_L1_MODEL   override the L1 triage model                 default: claude-haiku-4-5
+#   AUTODREAM_L1_EFFORT  --effort for the L1 worker (Haiku 4.5 rejects
+#                        it; use with Sonnet/Opus/Fable models)       default: unset
 #   AUTODREAM_L2_MODEL   override the L2 aggregator model            default: claude-opus-5-5
 #   AUTODREAM_MIN_USER_TURNS  noise-gate floor on user_message_count  default: 2
 #   AUTODREAM_MIN_MINUTES     noise-gate floor on duration_minutes    default: 1
