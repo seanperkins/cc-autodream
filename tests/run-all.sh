@@ -6703,6 +6703,20 @@ test_l2_diag_written_on_exit_137
 test_l2_diag_long_command_lines_keep_the_sections_intact
 test_l2_diag_absent_on_other_outcomes
 test_l2_diag_probes_never_fail_or_stall_the_run
+echo
+echo "# bench: model benchmark unit tests"
+if python3 -m unittest discover -s "$REPO/bench/tests" >/dev/null 2>&1; then
+  ok "bench unit tests pass"
+else
+  no "bench unit tests failed (run: python3 -m unittest discover -s bench/tests)"
+fi
+
+echo "# bench: the production L1 call is the adapter's"
+if bash "$REPO/bench/tests/l1_prod.sh" >/dev/null 2>&1; then
+  ok "bench/l1-prod.sh matches the adapter and run.sh"
+else
+  no "bench/l1-prod.sh drifted (run: bash bench/tests/l1_prod.sh)"
+fi
 
 echo
 echo "----------------------------------------"

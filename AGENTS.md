@@ -8,6 +8,7 @@ A nightly two-layer pipeline that reads yesterday's Claude Code session transcri
 
 - **Layer 1** (`prompts/SESSION_TRIAGE.md`, `claude-haiku-4-5`, fanned out one per session): reads one transcript, writes one findings JSON.
 - **Layer 2** (`prompts/PROMPT.md`, opus, single call): reads all findings JSONs, writes `dreams/YYYY-MM-DD.md`, optionally pins to project MEMORY.md.
+- **Model benchmark** (`bench/`, see `bench/README.md`): measures candidate L1 models and efforts against the frozen case set before `AUTODREAM_L1_MODEL` or `AUTODREAM_L1_EFFORT` is changed. `bench/l1-prod.sh` builds the L1 call from the claude adapter's `l1-argv`, the command `run.sh` starts.
 - `bin/run.sh` orchestrates both layers and everything around them.
 
 ## Session roots: one dir is not the corpus

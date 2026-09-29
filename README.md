@@ -295,6 +295,8 @@ Code, Codex, OMP) over the day, so the report can flag releases that change how 
 Each source has its own cache and its own section, so one unreachable remote never
 silences the others. Override the watched set with `AUTODREAM_CHANGELOG_SOURCES`.
 
+To compare models for L1 before changing `AUTODREAM_L1_MODEL`, see [`bench/README.md`](bench/README.md).
+
 Everything lives on disk (findings JSON, the report, run logs, stats) and every step
 is idempotent, so you can rerun any date. Configuration knobs are documented in
 `bin/run.sh`'s header.

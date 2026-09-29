@@ -6,6 +6,7 @@ All notable changes to cc-autodream. Format loosely follows Keep a Changelog.
 
 ### Changed
 - **Fork: the L2 model pin lives in the claude adapter manifest.** `adapters/claude/manifest.json` sets `l2_model` to `claude-opus-5-5` (upstream has no L2 pin); L1 stays `claude-haiku-4-5`. `l1-argv` and `warmup-argv` take an optional `--effort` from `AUTODREAM_L1_EFFORT_CLAUDE`, then `AUTODREAM_L1_EFFORT`, and send none by default because Haiku 4.5 rejects it. `AUTODREAM_L1_MODEL_CLAUDE` and `AUTODREAM_L2_MODEL_CLAUDE` still win over the manifest.
+- **Model benchmark, Phase 1 (`bench/`).** Stratified frozen case set, a resumable runner on the production L1 invocation (subscription CLI, served-model check, timeout and rate-limit handling), an objective grader (validity, authoritative fields, tiered evidence grounding, depth as `abstain_excess`) with an eligibility gate, a historical-output importer for free calibration, and a markdown report. Spec: `docs/superpowers/specs/2026-09-28-model-benchmark-design.md`.
 
 ## 2026-10-04
 
