@@ -727,13 +727,13 @@ test_no_sessions(){
 
 # ---- The approved L2 model stays stable; environment overrides still win ----
 test_l2_uses_the_default_model(){
-  echo "# L2: claude-opus-5-5 is the effective default; L1 is claude-sonnet-5-5"
+  echo "# L2: claude-opus-5-5 is the effective default; L1 is claude-haiku-4-5"
   local root; root=$(setup_env); mk_session "$root" sess1
   export FANOUT=1 MOCK_CAPTURE_DIR="$root/cap" AUTODREAM_L2_MODEL=""
   run_dream "$root"
   unset FANOUT MOCK_CAPTURE_DIR AUTODREAM_L2_MODEL
   assert_grep "$root/cap/l2-args.txt" '^claude-opus-5-5$' "L2 requests the approved model"
-  assert_grep "$root/cap/l1-args.txt" '^claude-sonnet-5-5$' "L1 requests Sonnet 5.5"
+  assert_grep "$root/cap/l1-args.txt" '^claude-haiku-4-5$' "L1 requests Haiku 4.5"
   assert_grep "$(fdir "$root")/run-stats.txt" '^l2_model: claude-opus-5-5$' "the report records the requested model"
   assert_nonempty "$root/dreams/$DATE.md" "the report lands"
   rm -rf "$root"
@@ -1686,6 +1686,57 @@ test_revalidates_garbage
 test_no_sessions
 test_l2_uses_the_default_model
 test_l2_model_pin_is_honoured
+
+# ---- L1 invocation lives in bin/l1-invoke.sh: pin the exact argv and prompt framing ----
+test_l1_invocation_argv_and_prompt(){
+  echo "# L1: exact argv and prompt framing from the shared invocation"
+  unset AUTODREAM_L1_MODEL AUTODREAM_L1_EFFORT
+  local root; root=$(setup_env); mk_session "$root" sess1
+  export FANOUT=1 MOCK_CAPTURE_DIR="$root/cap"
+  run_dream "$root"
+  unset FANOUT MOCK_CAPTURE_DIR
+  local expected
+  expected=$(cat <<'ARGV'
+--print
+--permission-mode
+bypassPermissions
+--model
+claude-haiku-4-5
+--no-session-persistence
+--tools
+Read
+Write
+--disable-slash-commands
+--strict-mcp-config
+--settings
+{"disableAllHooks":true}
+--append-system-prompt
+Headless triage worker. Read the session transcript and write exactly one findings JSON object, via the Write tool, to the literal output path given on line 2 of the prompt. Those paths are literal strings, not shell variables — never $-expand them. Print only the literal word done and exit.
+ARGV
+)
+  assert_eq "$(cat "$root/cap/l1-args.txt")" "$expected" "L1 argv is exactly the production command (no --effort by default)"
+  local in="$root/cap/l1-stdin.txt"
+  assert_grep "$in" '^Session transcript to analyze (literal absolute path): /' "prompt line 1 is the transcript path"
+  assert_grep "$in" '^Write your findings JSON to this literal absolute path: /' "prompt line 2 is the output path"
+  assert_eq "$(sed -n 3p "$in")" "" "a blank line separates the header from the triage prompt"
+  assert_eq "$(sed -n 4p "$in")" "$(sed -n 1p "$REPO/prompts/SESSION_TRIAGE.md")" "the triage prompt follows verbatim"
+  assert_grep "$in" '^## Precomputed session stats (authoritative' "the stats block is appended when a sidecar exists"
+  rm -rf "$root"
+}
+
+test_l1_model_and_effort_overrides(){
+  echo "# L1: AUTODREAM_L1_MODEL and AUTODREAM_L1_EFFORT reach the CLI"
+  local root; root=$(setup_env); mk_session "$root" sess1
+  export FANOUT=1 MOCK_CAPTURE_DIR="$root/cap" AUTODREAM_L1_MODEL=claude-opus-5-5 AUTODREAM_L1_EFFORT=high
+  run_dream "$root"
+  unset FANOUT MOCK_CAPTURE_DIR AUTODREAM_L1_MODEL AUTODREAM_L1_EFFORT
+  assert_eq "$(sed -n 4,7p "$root/cap/l1-args.txt" | tr '\n' ' ')" "--model claude-opus-5-5 --effort high " "model then effort, in that order"
+  assert_grep "$root/cap/l1-args.txt" '^--no-session-persistence$' "the rest of the argv is unchanged"
+  rm -rf "$root"
+}
+
+test_l1_invocation_argv_and_prompt
+test_l1_model_and_effort_overrides
 test_framing
 test_changelog
 test_prune_helper

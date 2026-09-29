@@ -6,7 +6,7 @@ Operating notes for working on this repo. Read this before changing `bin/run.sh`
 
 A nightly two-layer pipeline that reads yesterday's Claude Code session transcripts and produces a ranked daily report plus a short list of memory candidates for the human to promote.
 
-- **Layer 1** (`prompts/SESSION_TRIAGE.md`, `claude-sonnet-5-5` at low effort, fanned out one per session): reads one transcript, writes one findings JSON.
+- **Layer 1** (`prompts/SESSION_TRIAGE.md`, `claude-haiku-4-5`, fanned out one per session): reads one transcript, writes one findings JSON.
 - **Layer 2** (`prompts/PROMPT.md`, `claude-opus-5-5` unless `AUTODREAM_L2_MODEL` overrides it, single call): reads all findings JSONs, writes `dreams/YYYY-MM-DD.md` and `findings/YYYY-MM-DD/memory-candidates.json`. It never writes memory: Mnemopi is the only store, it takes reviewed entries only, and `bin/promote.sh <date>` is the step that writes them after triage.
 - `bin/run.sh` orchestrates both layers and everything around them.
 

@@ -2,7 +2,7 @@
 # Autodream runner — invoked by launchd at ~3am local time.
 #
 # Two-layer pipeline:
-#   L1: For each of yesterday's session JSONLs, spawn a parallel `claude --model claude-sonnet-5-5`
+#   L1: For each of yesterday's session JSONLs, spawn a parallel `claude` (AUTODREAM_L1_MODEL, default claude-haiku-4-5)
 #       running SESSION_TRIAGE.md → writes one findings.json per session.
 #   L2: One `claude --model claude-opus-5-5` running PROMPT.md → reads all findings JSONs,
 #       writes $DREAMS_DIR/YYYY-MM-DD.md plus a memory-candidates.json sidecar
@@ -186,6 +186,12 @@ _lib=$(find_lib lib-project.sh) && { # shellcheck source=/dev/null
 _lib=$(find_lib adapters.sh) && { # shellcheck source=/dev/null
   . "$_lib"; }
 PREFLIGHT=$(find_lib preflight.sh) || PREFLIGHT="$SCRIPT_DIR/preflight.sh"
+# Shared L1 invocation (prompt assembly + the claude command). Also sourced by the model
+# benchmark in bench/, so the benchmark measures this exact call. Every L1 worker needs it.
+L1_INVOKE_LIB=$(find_lib l1-invoke.sh) || {
+  echo "fatal: l1-invoke.sh not found in $SCRIPT_DIR or the repo bin/ (re-run install.sh)" >&2
+  exit 70
+}
 
 PRUNE="$SCRIPT_DIR/prune-self-sessions.sh"
 [ -x "$PRUNE" ] || PRUNE="$AUTODREAM_DIR/prune-self-sessions.sh"
@@ -1275,6 +1281,7 @@ dispatch_l1() { # one parallel pass; idempotent worker → only the still-missin
     esac
     output="$FINDINGS_DIR/$hash.json"
     errlog="$output.err"
+    . "$L1_INVOKE_LIB"
 
     # Idempotent, but validate: a non-empty file that is malformed or lacks a
     # top-level findings key is NOT a completed triage (a worker that emitted
@@ -1341,28 +1348,10 @@ dispatch_l1() { # one parallel pass; idempotent worker → only the still-missin
     # Launch from the isolated worker cwd so any AI-title stub lands in $WORK_BUCKET,
     # not the real session bucket. All paths below are absolute, so cd is safe here.
     cd "$WORK_DIR" 2>/dev/null || true
-    {
-      printf "Session transcript to analyze (literal absolute path): %s\n" "$readpath"
-      printf "Write your findings JSON to this literal absolute path: %s\n\n" "$output"
-      cat "$AUTODREAM_DIR/SESSION_TRIAGE.md"
-      if [ -s "$FINDINGS_DIR/$hash.stats.json" ]; then
-        printf "\n## Precomputed session stats (authoritative — copy these into your output)\n\n\`\`\`json\n"
-        cat "$FINDINGS_DIR/$hash.stats.json"
-        printf "\n\`\`\`\n"
-      fi
-    } | "$CLAUDE_BIN" \
-      --print \
-      --permission-mode bypassPermissions \
-      --model claude-sonnet-5-5 \
-      --effort low \
-      --no-session-persistence \
-      --tools Read Write \
-      --disable-slash-commands \
-      --strict-mcp-config \
-      --settings "{\"disableAllHooks\":true}" \
-      --append-system-prompt "Headless triage worker. Read the session transcript and write exactly one findings JSON object, via the Write tool, to the literal output path given on line 2 of the prompt. Those paths are literal strings, not shell variables — never \$-expand them. Print only the literal word done and exit." \
-      > /dev/null 2> "$errlog"
-
+    l1_build_prompt "$readpath" "$output" "$AUTODREAM_DIR/SESSION_TRIAGE.md" "$FINDINGS_DIR/$hash.stats.json" \
+          | l1_invoke_claude "${AUTODREAM_L1_MODEL:-claude-haiku-4-5}" "${AUTODREAM_L1_EFFORT:-}" "" \
+          > /dev/null 2> "$errlog"
+    
     if [ -s "$output" ]; then
       # Reported path should be the real session, not the temp slim copy. Then drop
       # the slim file (regenerable; keeps the findings dir clean).
@@ -1696,7 +1685,7 @@ EOF
     log "WARNING: could not resolve session provenance; findings cannot be normalized"
   fi
 
-  # ---- Layer 1: sonnet triage, parallel, retried across sleep/network gaps ----
+  # ---- Layer 1: triage, parallel, retried across sleep/network gaps ----
   # Lean-query env (claude-cells internal/claude/query.go pattern): keep subscription
   # OAuth auth but strip per-call bloat — no CLAUDE.md auto-load, no telemetry/error
   # reporting. Combined with the per-call flags (--no-session-persistence, --tools,
@@ -1705,7 +1694,7 @@ EOF
   # and require an API key). Exported once so both the L1 xargs subshells and the L2
   # call inherit it.
   export CLAUDE_CODE_DISABLE_CLAUDE_MDS=1 DISABLE_TELEMETRY=1 DISABLE_ERROR_REPORTING=1
-  export CLAUDE_BIN AUTODREAM_DIR FINDINGS_DIR SLIM WORK_DIR
+  export CLAUDE_BIN AUTODREAM_DIR FINDINGS_DIR SLIM WORK_DIR L1_INVOKE_LIB
   # AUTODREAM_L1_ROUNDS is referenced by the dispatcher subshell to decide
   # whether this is the last retry round (gates the metadata-stub fallback).
   export AUTODREAM_L1_ROUNDS

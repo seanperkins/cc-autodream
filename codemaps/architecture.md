@@ -24,7 +24,7 @@ bin/run.sh  TARGET_DATE
       │     └─ prune-self-sessions.sh --filter                → sessions.txt   (drops autodream's own)
       │
       ├─ L1 retry loop (AUTODREAM_L1_ROUNDS):
-      │     dispatch_l1: xargs -P FANOUT → claude --print (claude-sonnet-5-5, low effort, lean flags) per session
+      │     dispatch_l1: xargs -P FANOUT → claude --print (claude-haiku-4-5, lean flags) per session
       │       reads session .jsonl, writes findings/<date>/<sha>.json   (idempotent; .err on fail)
       │     l1_missing_count → wait_for_network → retry the still-missing
       │
