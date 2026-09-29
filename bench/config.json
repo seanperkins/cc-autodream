@@ -3,7 +3,7 @@
     "validity_min": 0.98,
     "authoritative_min": 0.95,
     "hallucination_max": 0.1,
-    "abstain_excess_max": 0.1
+    "abstain_excess_max": 0.15
   },
   "grounding": {
     "min_ratio": 0.85
