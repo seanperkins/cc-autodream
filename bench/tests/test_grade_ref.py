@@ -85,8 +85,17 @@ class Case(unittest.TestCase):
         self.assertEqual(gr.score_case(out(underlying_goal="deploy app store"), ref_row(), j)["goal"], "same")
         self.assertIsNone(gr.score_case(out(), ref_row(goal=None), j)["goal"])
         calls = j.calls
-        self.assertEqual(gr.score_case(out(underlying_goal=None), ref_row(), j)["goal"], "different")
-        self.assertEqual(j.calls, calls)  # a missing goal needs no judge call
+        no_goal = out(underlying_goal=None, notable_initiatives=[])
+        self.assertEqual(gr.score_case(no_goal, ref_row(), j)["goal"], "different")
+        self.assertEqual(j.calls, calls)  # no goal and no initiative to fall back on: a miss, no judge call
+
+    def test_a_null_goal_falls_back_to_the_top_initiative(self):
+        # the L1 prompt sets underlying_goal to null when it would duplicate the top initiative
+        j = FakeJudge()
+        s = gr.score_case(out(underlying_goal=None, notable_initiatives=["deploy app store today"]), ref_row(), j)
+        self.assertEqual(s["goal"], "same")
+        blank = gr.score_case(out(underlying_goal=None, notable_initiatives=["  ", 7]), ref_row(), j)
+        self.assertEqual(blank["goal"], "different")
 
     def test_a_failed_goal_judgement_is_unjudged(self):
         s = gr.score_case(out(underlying_goal="deploy app store"), ref_row(goal="deploy app x"),
