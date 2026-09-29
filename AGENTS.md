@@ -8,6 +8,7 @@ A nightly two-layer pipeline that reads yesterday's Claude Code session transcri
 
 - **Layer 1** (`prompts/SESSION_TRIAGE.md`, `claude-haiku-4-5`, fanned out one per session): reads one transcript, writes one findings JSON.
 - **Layer 2** (`prompts/PROMPT.md`, `claude-opus-5-5` unless `AUTODREAM_L2_MODEL` overrides it, single call): reads all findings JSONs, writes `dreams/YYYY-MM-DD.md` and `findings/YYYY-MM-DD/memory-candidates.json`. It never writes memory: Mnemopi is the only store, it takes reviewed entries only, and `bin/promote.sh <date>` is the step that writes them after triage.
+- **Model benchmark** (`bench/`, see `bench/README.md`): measures candidate L1 models and efforts against the frozen case set before `AUTODREAM_L1_MODEL` or `AUTODREAM_L1_EFFORT` is changed. `bin/l1-invoke.sh` is the L1 call shared by `run.sh` and the benchmark.
 - `bin/run.sh` orchestrates both layers and everything around them.
 
 Legacy `MEMORY.md` memory is retired on this host: autodream never reads or writes it and never runs `claude-memory gc`. The upstream automatic pin applier is not shipped or installed; `bin/promote.sh` remains the only memory writer. Prior reports' `## Triage decisions` are settled context; their candidates are not decisions.

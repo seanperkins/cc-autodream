@@ -3215,6 +3215,14 @@ test_question_streaks
 test_question_streaks_reruns_and_mismatch
 test_question_streaks_state_lives_with_the_install
 
+echo
+echo "# bench: model benchmark unit tests"
+if python3 -m unittest discover -s "$REPO/bench/tests" >/dev/null 2>&1; then
+  ok "bench unit tests pass"
+else
+  no "bench unit tests failed (run: python3 -m unittest discover -s bench/tests)"
+fi
+
 # Cross-repo drift, last. It is not a unit test — it inspects the sibling checkout, so it
 # can only run on a machine holding both — but it belongs in the same command as the rest,
 # because the failure it catches is one no amount of in-repo testing can see. Both repos

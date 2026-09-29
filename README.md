@@ -211,6 +211,8 @@ transcript, then a single smarter pass (`claude-opus-5-5`, overridable with `AUT
 writes the report. It also diffs the upstream Claude Code changelog over the day so
 the report can flag releases that change how you work.
 
+To compare models for L1 before changing `AUTODREAM_L1_MODEL`, see [`bench/README.md`](bench/README.md).
+
 Everything lives on disk (findings JSON, the report, run logs, stats) and every step
 is idempotent, so you can rerun any date. Configuration knobs are documented in
 `bin/run.sh`'s header.
