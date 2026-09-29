@@ -39,5 +39,35 @@
       "model": "claude-fable-5-1",
       "effort": "high"
     }
-  ]
+  ],
+  "reference": {
+    "models": [
+      {
+        "label": "ref-opus",
+        "harness": "claude",
+        "model": "claude-opus-5-5",
+        "effort": "high"
+      },
+      {
+        "label": "ref-fable",
+        "harness": "claude",
+        "model": "claude-fable-5-1",
+        "effort": "high"
+      },
+      {
+        "label": "ref-astra",
+        "harness": "codex",
+        "model": "gpt-6-astra",
+        "effort": "high"
+      }
+    ],
+    "judge": {
+      "model": "claude-fable-5-1",
+      "fallback_model": "claude-opus-5-5",
+      "effort": "medium",
+      "workers": 3
+    },
+    "spotchecks": 15,
+    "seed": 7
+  }
 }

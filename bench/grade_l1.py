@@ -292,7 +292,7 @@ def perf_summary(rows, errors):
     }
 
 
-def grade_run(run_dir, cases_path, cfg):
+def grade_run(run_dir, cases_path, cfg, reference=None):
     run_dir = Path(run_dir)
     cases = {c["case_id"]: c for c in read_jsonl(cases_path)}
     data = Path(cases_path).parent
@@ -314,12 +314,17 @@ def grade_run(run_dir, cases_path, cfg):
         if cid not in stats_cache:
             stats_cache[cid] = json.loads((data / case["stats"]).read_text(encoding="utf-8"))
             hay[cid] = transcript_text(data / case["transcript"])
+        if reference is not None:  # Phase 2: the reference replaces the historical stand-in
+            ref = reference.get(cid)
+            decided = ref is not None and not ref["excluded"] and ref.get("outcome") is not None
+            case = dict(case, hist={"outcome": ref["outcome"] if decided else None})
         graded.append(grade_row(row, case, obj, stats_cache[cid], hay[cid], cfg))
     meta = {}
     if (run_dir / "run.json").exists():
         meta = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
     summary = {"label": run_dir.name, "model": meta.get("model"), "effort": meta.get("effort"),
-               "rows": len(graded), "metrics": aggregate(graded, cfg),
+               "rows": len(graded), "abstain_source": "reference" if reference is not None else "historical",
+               "metrics": aggregate(graded, cfg),
                "perf": perf_summary(list(rows.values()), errors)}
     with (run_dir / "graded.jsonl").open("w", encoding="utf-8") as f:
         for g in graded:
