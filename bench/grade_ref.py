@@ -71,9 +71,12 @@ def score_case(obj, ref, judge):
         return None
     res = {"outcome": outcome_score(obj["outcome"], ref["outcome"]), "goal": None, "goal_unjudged": 0}
     if ref.get("goal"):
-        cg = obj.get("underlying_goal")
+        # The L1 prompt sets underlying_goal to null when it would duplicate the top initiative, so a
+        # null goal means "the goal is the initiative" and that text is what gets compared.
+        cg = obj.get("underlying_goal") or next(
+            (x for x in obj.get("notable_initiatives") or [] if isinstance(x, str) and x.strip()), None)
         if not cg:
-            res["goal"] = "different"  # no goal stated where the reference has one: a miss, no call needed
+            res["goal"] = "different"  # no goal and no initiative where the reference has one: a miss, no call needed
         else:
             v = judge.compare("goal", cg, ref["goal"])["verdict"]
             res["goal"], res["goal_unjudged"] = v, int(v is None)
