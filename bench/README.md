@@ -1,4 +1,4 @@
-# bench/ — model benchmark for autodream (Phase 1: L1 objective checks)
+# bench/ — model benchmark for autodream (L1)
 
 Measures which model and effort level works best as the **L1** per-session triage worker,
 before you change `AUTODREAM_L1_MODEL` / `AUTODREAM_L1_EFFORT`. Spec:
@@ -46,3 +46,44 @@ bench/data/inputs/            slimmed transcripts + stats sidecars, byte-identic
 bench/data/runs/<label>/      results.jsonl, errors.jsonl, findings/, cli/, graded.jsonl, summary.json
 bench/data/report.md
 ```
+
+## Phase 2: agreement with a frozen reference
+
+Phase 1's gate needs no reference. Phase 2 adds one: a majority vote of three reference models
+(`reference.models` in `config.json`): Opus 5.5 and Fable 5.1 through `claude`, GPT-6 Astra through
+`codex`. Each triages every frozen case once; `build_reference.py` turns the three outputs into one
+reference row per case:
+
+- **outcome**: the majority value; a three-way (or 1-1) split goes to you.
+- **goal**: the first goal another model's goal is judged the same as, else none (not scored).
+- **findings and instructions**: clusters of items judged the same pattern (same category first).
+  A cluster reported by two or more models is *confirmed*; a single-model item is *unconfirmed*.
+
+```bash
+python3 bench/runner.py --model claude-opus-5-5 --effort high --label ref-opus --timeout 1800 --confirm
+python3 bench/runner.py --model claude-fable-5-1 --effort high --label ref-fable --timeout 1800 --confirm
+python3 bench/runner.py --harness codex --model gpt-6-astra --effort high --label ref-astra --timeout 1800 --confirm
+python3 bench/build_reference.py build     # majority vote -> bench/data/reference/reference.jsonl
+python3 bench/build_reference.py sheet     # writes bench/data/reference/adjudicate.md
+# edit adjudicate.md: rule on each outcome split, mark each spot check OK or BAD
+python3 bench/build_reference.py apply
+python3 bench/grade_ref.py --run bench/data/runs/<label>
+python3 bench/report.py
+```
+
+`grade_ref.py` re-grades a run with the reference as the depth baseline (`abstain_excess` no longer
+uses the historical Haiku stand-in) and adds outcome agreement and distance, goal agreement, and
+finding and instruction recall and precision. Precision is reported strict (matches a confirmed
+finding) and lenient (also matches an unconfirmed one).
+
+The judge (`judge.py`) only compares wording: goal, instruction and finding pairs as same, partial or
+different. It is blind (prompts never name a model), never the candidate under test (Fable, or Opus
+when the candidate is Fable), schema-validated, and cached in `bench/data/reference/judge-cache.jsonl`
+so reruns are free. A failed call is counted as `unjudged` and never guessed.
+
+The codex harness (`run-one-l1-codex.sh`) sends the same L1 prompt plus the worker instructions
+production gives `claude` through `--append-system-prompt`, and one added sentence: a slimmed
+transcript has lines cut off mid-JSON, which are plain text, never an error. Without it GPT-6 Astra
+ran a strict JSON parser over the slimmed transcript and returned the prompt's own error object for
+every real case tried (6 of 6); with it 4 of 4 were valid. Codex reports no served model, so its rows
+are marked unverified.
