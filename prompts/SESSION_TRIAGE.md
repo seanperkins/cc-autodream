@@ -62,11 +62,11 @@ For a trivial session (a handful of turns, no substantive work), emit the facets
 
 Write EXACTLY this shape to `OUTPUT_PATH`. JSON only, no markdown fence, no prose.
 `compliance_markers` is **RETIRED 2026-10-03**: copy it verbatim from the stats block
-when one is present; otherwise emit all zeros. Never count marker lines yourself. No
+when the block has it; otherwise emit all zeros. Never count marker lines yourself. No
 rule loaded on this host defines `RETRY-BUDGET:`, `FETCH-PIVOT:`, `DELEGATED:` or
 `DIRECT-OK:`, so the counts were structurally zero and `tool_loop` findings keyed on a
 missing marker were false positives. The field stays in the schema so existing
-consumers don't hit a missing key; its value is no longer read.
+consumers don't hit a missing key; L2 no longer reads its value.
 
 ```json
 {
