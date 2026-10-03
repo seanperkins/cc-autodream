@@ -285,6 +285,19 @@ The suite pins `AUTODREAM_CONFIG` into its sandbox now that `run.sh` sources the
 
 `tests/review-skip.sh` covers `bin/review.sh`'s skip/launch decision against fixture reports, with an inline mock claude that just touches a marker file — if the marker exists, review.sh reached `exec claude`. It pins `AUTODREAM_CONFIG` to a nonexistent path so the host's own config (`AUTODREAM_TRIAGE_SURFACE=cmux`) can't leak in and spawn a real workspace mid-test. Run it after any review.sh change, and after changing PROMPT.md's Open-questions marker contract.
 
+## The Claude Code mod (`mods/autodream-band`)
+
+An optional mod for Claude Code itself (a hot-reloading plugin of function hooks, not shell): a band above the prompt when the newest report has open questions, `/dream` to read it, and Triage to run `review.sh` in a cmux split. It is the only thing in the repo that **parses the report**, so `prompts/PROMPT.md` now has a second reader besides L2's own consumers. These four shapes are its contract, and `hooks/lib.ts` is where to change it when one moves:
+
+- the title `# Autodream — YYYY-MM-DD`;
+- `## Top patterns` with `### <title>` blocks carrying `- **Severity**: high|medium|low`;
+- `## Open questions` and the `<!-- autodream:open-questions=N -->` marker (no marker reads as zero questions, so the band stays hidden);
+- a `## Triage decisions` heading, which is what makes the band go away.
+
+It finds `review.sh`, the reports and cmux through the variables `review.sh` reads (`AUTODREAM_DIR`, `DREAMS_DIR`, `CMUX_BIN`) with the same defaults, so a new knob in `review.sh` means a matching line in `locations()`. It cannot see a value that lives only in `$AUTODREAM_DIR/config`. Its in-session walk-through (`/dream here`) is a prompt of its own in `triagePrompt`, modelled on `review.sh`'s system prompt but not generated from it: if `review.sh`'s rules change, check whether the mod's should.
+
+Its tests run under Claude Code, not in `tests/run-all.sh` and not in CI (`claude plugin validate mods/autodream-band`, `claude plugin test mods/autodream-band`; `tsc -p` needs the types Claude Code writes into the git-ignored `.claude-plugin/types/` when it loads the mod). `$.env.get` takes a literal variable name, so the variables a mod reads can be listed: a loop over names fails validation.
+
 ## The sibling repo, and the fix that lands in only one of them
 
 This repo has a twin: **omp-autodream**, the OMP port. Both are checked out on this host

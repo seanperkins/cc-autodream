@@ -130,6 +130,20 @@ cmux workspace instead, drop a config file at `~/.claude/autodream/config`
 AUTODREAM_TRIAGE_SURFACE=cmux    # inline (default) | cmux
 ```
 
+### A morning band inside Claude Code (optional)
+
+If you live in Claude Code, `mods/autodream-band/` brings the report to you instead of waiting for you to run
+`review.sh`. When the newest report has open questions or a medium/high pattern, a one-line band appears above the
+prompt with **Triage**, **View** and **Dismiss**, and `/dream` opens the report's key sections in a pane. **Triage**
+(or `/dream triage`) runs `review.sh` in a fresh session in a cmux split beside the one you are in. The mod reads the
+same `DREAMS_DIR`, `AUTODREAM_DIR` and `CMUX_BIN` variables as `review.sh`, so it needs no config of its own.
+
+```bash
+claude --plugin-dir /path/to/cc-autodream/mods/autodream-band
+```
+
+Commands, fallbacks and how to test it are in [`mods/autodream-band/README.md`](mods/autodream-band/README.md).
+
 ## Leaving notes for the next run
 
 Notes you leave get answered in the report's **Operator notes** section, with evidence
