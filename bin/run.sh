@@ -38,6 +38,17 @@
 #   AUTODREAM_L1_EFFORT  --effort for the L1 worker (Haiku 4.5 rejects
 #                        it; use with Sonnet/Opus/Fable models)       default: unset
 #   AUTODREAM_L2_MODEL   override the L2 aggregator model            default: claude-opus-5-5
+#   AUTODREAM_L1_CHUNK_BYTES  max bytes of slimmed transcript per L1 worker; a bigger
+#                        one is split at line boundaries and merged back. 0 turns
+#                        chunking off (head/tail elision).                    default: 300000
+#   AUTODREAM_L1_MAX_CHUNKS   over this many chunks the middle is dropped; recorded in the
+#                        findings meta and counted as l1_chunks_elided in run-stats  default: 8
+#   AUTODREAM_L1_ESCALATE     off | friction | all: which sessions get the stronger
+#                        L1 model                                            default: friction
+#   AUTODREAM_L1_ESCALATE_MIN    friction score bar (errors + 3 * permission denials)  default: 8
+#   AUTODREAM_L1_ESCALATE_MAX    sessions per run, hottest first (friction mode); the cost
+#                        ceiling is this times MAX_CHUNKS Opus calls, 6 x 8 by default   default: 6
+#   AUTODREAM_L1_ESCALATE_MODEL  model for an escalated session           default: claude-opus-5-5
 #   AUTODREAM_MIN_USER_TURNS  noise-gate floor on user_message_count  default: 2
 #   AUTODREAM_MIN_MINUTES     noise-gate floor on duration_minutes    default: 1
 #   AUTODREAM_STATS_BIN       override the resolved session-stats.sh path, authoritative
@@ -137,6 +148,8 @@ FINDINGS_DIR="$AUTODREAM_DIR/findings/$TARGET_DATE"
 REPORT_PATH="$DREAMS_DIR/$TARGET_DATE.md"
 RUN_LOG="$LOG_DIR/run-$TARGET_DATE.log"
 SESSIONS_LIST="$FINDINGS_DIR/sessions.txt"
+ESCALATE_LIST="$FINDINGS_DIR/escalate.txt"   # hashes the L1 fan-out sends to the escalation model
+ESCALATED=0
 
 # Self-session prune helper — single source of truth for "is this autodream's own
 # transcript?". Resolve it next to this script first (works for the repo copy and the
@@ -210,6 +223,43 @@ fi
 # Oversized-transcript slimmer (resolved the same way; exported to the L1 workers).
 SLIM="$SCRIPT_DIR/slim-transcript.sh"
 [ -x "$SLIM" ] || SLIM="$AUTODREAM_DIR/slim-transcript.sh"
+# L1 coverage helpers (resolved the same way): the report-day window, the chunker and
+# the chunk merge. A session is selected by what is IN it, not by its file mtime, so a
+# multi-day orchestrator that is still being written is reviewed one day at a time; a
+# transcript too big for one worker is split at line boundaries, one worker per chunk,
+# and merged back into the one findings JSON per session that L2 reads.
+#
+# They are ONE feature: install.sh links all three together, so the only reachable
+# states are all present or none (a symlinked run.sh resolves SCRIPT_DIR to the install
+# dir, which lacks them until install.sh re-runs). L1_COVERAGE is that single bit. With
+# it off there is no window, no chunking and the slimmer keeps its head/tail elision,
+# exactly the behaviour before this feature, and tests/run-all.sh pins that state.
+SESSION_WINDOW="$SCRIPT_DIR/session-window.sh"
+[ -x "$SESSION_WINDOW" ] || SESSION_WINDOW="$AUTODREAM_DIR/session-window.sh"
+CHUNKER="$SCRIPT_DIR/chunk-transcript.sh"
+[ -x "$CHUNKER" ] || CHUNKER="$AUTODREAM_DIR/chunk-transcript.sh"
+MERGER="$SCRIPT_DIR/merge-chunks.sh"
+[ -x "$MERGER" ] || MERGER="$AUTODREAM_DIR/merge-chunks.sh"
+L1_COVERAGE=0
+if [ -x "$SESSION_WINDOW" ] && [ -x "$CHUNKER" ] && [ -x "$MERGER" ]; then L1_COVERAGE=1; fi
+# Enumeration passes the adapter an upper date. With a window active the in-transcript
+# timestamps decide, so it is far in the future; without one it is the day after the
+# report day, the original bounded find. Keeping this a plain argument leaves the adapter
+# contract free of any knowledge of the runner window. "Far" is the report day plus five
+# years, not a year-9999 sentinel: BSD find cannot parse a distant date (it fails with
+# "Can't parse date/time"), which the first version of this found the hard way. If the
+# date cannot be computed the window stays off and the original bounded find runs.
+ENUM_END="$NEXT_DATE"
+WINDOW_ON=0
+unset AUTODREAM_WINDOW_START_EPOCH AUTODREAM_WINDOW_END_EPOCH
+if [ "$L1_COVERAGE" = 1 ] && _wb=$("$SESSION_WINDOW" bounds "$TARGET_DATE" "$NEXT_DATE" 2>/dev/null) && [ -n "$_wb" ] \
+   && _far=$(date -j -f %Y-%m-%d -v+5y "$TARGET_DATE" +%Y-%m-%d 2>/dev/null) && [ -n "$_far" ]; then
+  AUTODREAM_WINDOW_START_EPOCH="${_wb%% *}"
+  AUTODREAM_WINDOW_END_EPOCH="${_wb##* }"
+  export AUTODREAM_WINDOW_START_EPOCH AUTODREAM_WINDOW_END_EPOCH
+  WINDOW_ON=1
+  ENUM_END="$_far"
+fi
 # Deterministic session-stat pre-pass (resolved like the other helper scripts).
 # AUTODREAM_STATS_BIN overrides the resolved path outright, with no existability
 # fallback, for the same reason AUTODREAM_OVERLAP_BIN does below (#26): tests need to
@@ -423,6 +473,7 @@ write_unindexed_flag() {
 NL=$'\n'            # for the newline-in-path check below
 TAB=$'\t'           # ditto; the L1 xargs -I fan-out turns a tab into a space
 REJECTED_PATHS=0    # session paths a line-based sessions.txt cannot represent
+OUT_OF_WINDOW=0     # files enumerated but holding no record inside the report day
 PARTIAL_ROOTS=0     # roots whose enumerator failed but still returned data
 ROOTS_CONFIGURED=0  # roots we were told to scan
 ROOTS_SCANNED=0     # roots that existed and were walked
@@ -683,6 +734,20 @@ scan_one_adapter() { # $1=adapter name
           continue
           ;;
       esac
+      # Report-day window gate. While a window is active enumeration bounds mtime only far
+      # into the future, so a file modified after the day is kept only if it has a record
+      # INSIDE the day (a multi-day orchestrator). exit 1 = no record in the day, or a file
+      # with no clock at all that was modified after the day (its mtime decides, as the
+      # bounded find used to): skipped and COUNTED, so it cannot read as a quiet night.
+      # exit 0 = yes. Any other status is a helper failure: keep the session, because a
+      # broken helper must cost extra work, not drop a session.
+      if [ "$WINDOW_ON" = 1 ]; then
+        "$SESSION_WINDOW" in-window "$sp" "$AUTODREAM_WINDOW_START_EPOCH" "$AUTODREAM_WINDOW_END_EPOCH" </dev/null >/dev/null 2>&1
+        if [ "$?" -eq 1 ]; then
+          OUT_OF_WINDOW=$((OUT_OF_WINDOW + 1))
+          continue
+        fi
+      fi
       # Paired writes, both checked. Losing either half desynchronises the
       # worklist from its provenance, and the collision detector reads the
       # provenance half.
@@ -723,7 +788,7 @@ enumerate_for() { # $1=adapter $2=root -> NUL-delimited paths
     # the exit code examined, and this wrapper handed it a success every time.
     # The suite passed 306 assertions over that, because none of them ran an
     # adapter whose enumerate fails. tests/run-all.sh now has one.
-    adapter_run "$1" enumerate "$2" "$TARGET_DATE" "$NEXT_DATE"
+    adapter_run "$1" enumerate "$2" "$TARGET_DATE" "$ENUM_END"
     return $?
   fi
   # The fallback is CLAUDE-ONLY. It hardcodes *.jsonl, and nothing reads
@@ -739,7 +804,7 @@ enumerate_for() { # $1=adapter $2=root -> NUL-delimited paths
   fi
   find "$2" -type f -name '*.jsonl' \
        -newermt "$TARGET_DATE 00:00:00" \
-       ! -newermt "$NEXT_DATE 00:00:00" \
+       ! -newermt "$ENUM_END 00:00:00" \
        -print0 2>/dev/null
 }
 
@@ -1228,6 +1293,53 @@ compute_session_stats() {
   done < "$SESSIONS_LIST"
 }
 
+# ---- Model escalation: spend a stronger L1 model where friction was MEASURED ----
+# Haiku missed a real permission-gate finding that Opus reported from the same input
+# (one session, one run each; the repo L1 benchmark shows the same direction), and Opus
+# costs about 15x as much per run, so it is not the default for every session. The
+# decision uses the stats sidecar, which counts is_error tool_result blocks (never a
+# grep of the transcript, which would count prose and the system prompt).
+#
+# The knobs are documented in the header of this file. score = error_result_count + 3 * permission_denial_count. The bar of 8 was calibrated on
+# 16 real sessions: quiet ones scored 0-4, the session with the real permission finding
+# scored 8, heavy-friction ones 22-71. The cost of an escalated session is per CHUNK, so a
+# multi-chunk session costs several calls; the MAX cap counts sessions, not chunks.
+# Written once, before any L1 call, so every retry round sends a session to the same model.
+select_escalations() {
+  . "$L1_INVOKE_LIB"    # l1_noise_gated lives with the other L1 helpers
+  local mode="${AUTODREAM_L1_ESCALATE:-friction}" min="${AUTODREAM_L1_ESCALATE_MIN:-8}" max="${AUTODREAM_L1_ESCALATE_MAX:-6}"
+  local session hash stats
+  ESCALATED=0
+  : > "$ESCALATE_LIST" 2>/dev/null || { log "WARNING: cannot write $ESCALATE_LIST; escalation is OFF this run"; return 0; }
+  case "$mode" in
+    off) return 0 ;;
+    friction|all) ;;
+    *) log "WARNING: AUTODREAM_L1_ESCALATE=$mode is not off, friction or all; escalation is OFF this run"; return 0 ;;
+  esac
+  case "$min" in ''|*[!0-9]*) log "WARNING: AUTODREAM_L1_ESCALATE_MIN=$min is not a number; using 8"; min=8 ;; esac
+  case "$max" in ''|*[!0-9]*) log "WARNING: AUTODREAM_L1_ESCALATE_MAX=$max is not a number; using 6"; max=6 ;; esac
+  while IFS= read -r session; do
+    [ -n "$session" ] || continue
+    hash=$(session_hash "$session") || continue
+    stats="$FINDINGS_DIR/$hash.stats.json"
+    # A session the noise gate will skip never reaches a model, so it must not take a slot
+    # or be counted (the same predicate the worker uses).
+    l1_noise_gated "$stats" && continue
+    if [ "$mode" = all ]; then printf '999999\t%s\n' "$hash"; continue; fi
+    [ -s "$stats" ] || continue
+    jq -r --arg h "$hash" '"\(((.error_result_count // 0) + 3 * (.permission_denial_count // 0)))\t\($h)"' "$stats" 2>/dev/null
+  done < "$SESSIONS_LIST" > "$ESCALATE_LIST.scores"
+  if [ "$mode" = all ]; then
+    cut -f2 "$ESCALATE_LIST.scores" > "$ESCALATE_LIST"
+  else
+    awk -F'\t' -v min="$min" '$1 + 0 >= min + 0' "$ESCALATE_LIST.scores" \
+      | sort -t "$TAB" -k1,1nr -k2,2 | head -n "$max" | cut -f2 > "$ESCALATE_LIST"
+  fi
+  rm -f "$ESCALATE_LIST.scores"
+  ESCALATED=$(wc -l < "$ESCALATE_LIST" | tr -d ' ')
+  log "escalation ($mode): $ESCALATED session(s) go to ${AUTODREAM_L1_ESCALATE_MODEL:-claude-opus-5-5}"
+}
+
 # ---- Global overlap pass (#14): cross-session "multi-clauding" stat ----
 # Runs once compute_session_stats has written every session's *.stats.json sidecar
 # (each carries the mechanical user_turn_timestamps array). Overlap is a GLOBAL,
@@ -1314,14 +1426,11 @@ dispatch_l1() { # one parallel pass; idempotent worker → only the still-missin
     # measured. A missing or unparseable stats sidecar also never gates; bias
     # to triage. Defaults: 2 user turns, 1 minute; either condition alone gates.
     statsfile="$FINDINGS_DIR/$hash.stats.json"
-    if [ -s "$statsfile" ]; then
-      gate=$(jq -r --argjson min_turns "${AUTODREAM_MIN_USER_TURNS:-2}" --argjson min_minutes "${AUTODREAM_MIN_MINUTES:-1}" "if (.isSidechain == true) or ((.tool_call_count // 0) >= 5) then 0 elif (.user_message_count // 0) < \$min_turns then 1 elif ((.duration_minutes // 0) > 0) and ((.duration_minutes // 0) < \$min_minutes) then 1 else 0 end" "$statsfile" 2>/dev/null)
-      if [ "$gate" = "1" ]; then
-        printf "{\"session_path\":\"%s\",\"skipped\":\"below_noise_gate\",\"findings\":[]}\n" "$session" > "$output"
-        rm -f "$errlog"
-        echo "gated (below noise threshold): $session ($hash)" >&2
-        exit 0
-      fi
+    if l1_noise_gated "$statsfile"; then
+      printf "{\"session_path\":\"%s\",\"skipped\":\"below_noise_gate\",\"findings\":[]}\n" "$session" > "$output"
+      rm -f "$errlog"
+      echo "gated (below noise threshold): $session ($hash)" >&2
+      exit 0
     fi
 
     # Oversized transcripts (multi-MB, base64 images, giant tool outputs) blow the
@@ -1331,9 +1440,24 @@ dispatch_l1() { # one parallel pass; idempotent worker → only the still-missin
     readpath="$session"
     slimfile=""
     sz=$(wc -c < "$session" | tr -d " ")
-    if [ "${sz:-0}" -gt "${AUTODREAM_SLIM_BYTES:-262144}" ] && [ -x "$SLIM" ]; then
+    # Slim when the file is over the byte threshold, or when a report-day window is
+    # set and the file spills outside the day. A small multi-day file would
+    # otherwise be read whole and ignore the window.
+    need_slim=0
+    [ "${sz:-0}" -gt "${AUTODREAM_SLIM_BYTES:-262144}" ] && need_slim=1
+    if [ "$need_slim" = 0 ] && [ -n "${AUTODREAM_WINDOW_START_EPOCH:-}" ] && [ -x "${SESSION_WINDOW:-}" ] \
+       && "$SESSION_WINDOW" needs-slice "$session" "$AUTODREAM_WINDOW_START_EPOCH" "$AUTODREAM_WINDOW_END_EPOCH" </dev/null >/dev/null 2>&1; then
+      need_slim=1
+    fi
+    # Chunking on (the default) means the slimmer keeps EVERY conversation line and the
+    # chunker, not the slimmer, decides how to fit the worker. AUTODREAM_L1_CHUNK_BYTES=0
+    # turns it off and restores the old head/tail elision.
+    chunk_bytes="${AUTODREAM_L1_CHUNK_BYTES:-300000}"
+    slim_full=0
+    if [ "$chunk_bytes" -gt 0 ] 2>/dev/null && [ "${L1_COVERAGE:-0}" = 1 ]; then slim_full=1; fi
+    if [ "$need_slim" = 1 ] && [ -x "$SLIM" ]; then
       slimfile="$FINDINGS_DIR/$hash.slim.jsonl"
-      if "$SLIM" "$session" "$slimfile" 2>/dev/null && [ -s "$slimfile" ]; then
+      if AUTODREAM_SLIM_FULL="$slim_full" "$SLIM" "$session" "$slimfile" 2>/dev/null && [ -s "$slimfile" ]; then
         readpath="$slimfile"
         echo "slimmed: $session ($sz bytes) ($hash)" >&2
       else
@@ -1351,9 +1475,102 @@ dispatch_l1() { # one parallel pass; idempotent worker → only the still-missin
     # Launch from the isolated worker cwd so any AI-title stub lands in $WORK_BUCKET,
     # not the real session bucket. All paths below are absolute, so cd is safe here.
     cd "$WORK_DIR" 2>/dev/null || true
-    l1_build_prompt "$readpath" "$output" "$AUTODREAM_DIR/SESSION_TRIAGE.md" "$FINDINGS_DIR/$hash.stats.json" \
-          | l1_invoke_claude "${AUTODREAM_L1_MODEL:-claude-haiku-4-5}" "${AUTODREAM_L1_EFFORT:-}" "" \
-          > /dev/null 2> "$errlog"
+    l1_model="${AUTODREAM_L1_MODEL:-claude-haiku-4-5}"
+    l1_effort="${AUTODREAM_L1_EFFORT:-}"
+    # A session picked by select_escalations gets the escalation model. The base effort
+    # belongs to the base model (Haiku rejects --effort outright), so an escalated call
+    # runs at the escalation model default effort.
+    if [ -s "${ESCALATE_LIST:-/nonexistent}" ] && grep -qxF "$hash" "$ESCALATE_LIST"; then
+      l1_model="${AUTODREAM_L1_ESCALATE_MODEL:-claude-opus-5-5}"
+      l1_effort=""
+      echo "escalated: $session ($hash) -> $l1_model" >&2
+    fi
+    # Split a slimmed transcript that is bigger than one worker can read. Chunk INPUTS
+    # are rebuilt every dispatch (deterministic for an unchanged transcript). Chunk
+    # OUTPUTS live under .chunks/ with a non-.json suffix, so nothing that globs the
+    # findings directory can mistake one for a session, and are named by the sha1 of
+    # their chunk, so a retry reuses an answer only for an identical chunk. Once the
+    # chunker has produced chunks the session is chunked even if only ONE was kept (a
+    # cap of 1), so the worker reads the retained chunk and never the whole slim file.
+    chunked=0; nchunks=1; elided=0; chunkroot=""; l1_blocked=0
+    if [ -n "$hash" ]; then chunkroot="$FINDINGS_DIR/.chunks/$hash"; fi
+    if [ -n "$slimfile" ] && [ "$slim_full" = 1 ] && [ -n "$chunkroot" ]; then
+      ssz=$(wc -c < "$slimfile" | tr -d " ")
+      if [ "${ssz:-0}" -gt "$chunk_bytes" ]; then
+        maxc="${AUTODREAM_L1_MAX_CHUNKS:-8}"
+        case "$maxc" in ""|*[!0-9]*) maxc=0 ;; *) maxc=$((10#$maxc)) ;; esac
+        [ "$maxc" -ge 1 ] || { echo "WARNING: AUTODREAM_L1_MAX_CHUNKS=${AUTODREAM_L1_MAX_CHUNKS:-} is not a positive number; using 8" >&2; maxc=8; }
+        mkdir -p "$chunkroot/in" 2>/dev/null
+        cinfo=$("$CHUNKER" "$slimfile" "$chunkroot/in" "$chunk_bytes" "$maxc" 2>/dev/null) || cinfo=""
+        read -r nchunks elided <<< "$cinfo"
+        case "$nchunks" in ""|*[!0-9]*) nchunks=0 ;; esac
+        case "$elided" in ""|*[!0-9]*) elided=0 ;; esac
+        if [ "$nchunks" -ge 1 ]; then
+          chunked=1
+          echo "chunked: $session ($hash) $nchunks chunks ($elided elided)" >&2
+        else
+          # The chunker could not run (full disk, unwritable scratch). Do NOT hand one
+          # worker the whole uncapped slim, which the slimmer would otherwise have capped:
+          # fall back to the old head/tail view, loudly.
+          nchunks=1; elided=0
+          echo "WARNING: chunker failed for $session ($hash); falling back to the capped head/tail slim" >&2
+          if AUTODREAM_SLIM_FULL=0 "$SLIM" "$session" "$slimfile" 2>/dev/null && [ -s "$slimfile" ]; then
+            readpath="$slimfile"
+          else
+            # The capped re-slim failed too: bound the full slim by hand rather than read it
+            # uncapped, privately (a session-derived file) and with a numeric cap. If even that
+            # fails there is no bounded input, so read nothing this round: the output stays
+            # absent, the session is retried, and the final round writes the honest stub.
+            cap="${AUTODREAM_SLIM_CAP:-262144}"
+            case "$cap" in ""|*[!0-9]*) cap=262144 ;; esac
+            if ( umask 077; head -c "$cap" "$slimfile" > "$slimfile.cap" ) 2>/dev/null && mv -f "$slimfile.cap" "$slimfile"; then
+              :
+            else
+              rm -f "$slimfile.cap"; l1_blocked=1
+            fi
+          fi
+        fi
+      fi
+    fi
+    : > "$errlog"
+    parts=(); chunk_fail=0; ci=1
+    while [ "$ci" -le "$nchunks" ]; do
+      if [ "$chunked" = 1 ]; then
+        cin=$(printf "%s/in/chunk-%02d.jsonl" "$chunkroot" "$ci")
+        csha=$(shasum -a 1 "$cin" | cut -c1-12)
+        cout=$(printf "%s/%02d-%s.chunkout" "$chunkroot" "$ci" "$csha")
+        cnote=$(l1_chunk_note "$ci" "$nchunks" "$elided")
+      else
+        cin="$readpath"; cout="$output"; cnote=""
+      fi
+      if [ "$l1_blocked" = 1 ]; then
+        echo "WARNING: no bounded input for $session ($hash); skipping L1 this round" >&2
+      elif [ "$chunked" = 1 ] && l1_chunk_ok "$cout"; then
+        echo "reuse: chunk $ci/$nchunks of $session ($hash)" >&2
+      else
+        [ "$chunked" = 1 ] && rm -f "$cout"
+        l1_build_prompt "$cin" "$cout" "$AUTODREAM_DIR/SESSION_TRIAGE.md" "$FINDINGS_DIR/$hash.stats.json" "$cnote" \
+              | l1_invoke_claude "$l1_model" "$l1_effort" "" \
+              > /dev/null 2>> "$errlog"
+        # A chunk answer counts only if it is a findings object with no error. Anything
+        # else (an error object, no findings, a wrong type) is discarded so the retry
+        # round redoes THIS chunk, instead of being cached and merged around.
+        if [ "$chunked" = 1 ] && ! l1_chunk_ok "$cout"; then rm -f "$cout"; chunk_fail=1; fi
+      fi
+      parts+=("$cout")
+      ci=$((ci + 1))
+    done
+    # Merge only when EVERY chunk answered properly. A partial merge would publish a
+    # session judged on some of its chunks as if it were all of them; instead $output
+    # stays absent, the round retries, and the chunks that answered are reused. A merge
+    # that fails anyway drops every cached answer so the next round cannot loop on them.
+    if [ "$chunked" = 1 ] && [ "$chunk_fail" = 0 ]; then
+      if "$MERGER" --session "$session" --elided "$elided" "${parts[@]}" > "$output.merge" 2>> "$errlog" && [ -s "$output.merge" ]; then
+        mv -f "$output.merge" "$output"
+      else
+        rm -f "$output.merge" "${parts[@]}"
+      fi
+    fi
     
     if [ -s "$output" ]; then
       # Reported path should be the real session, not the temp slim copy. Then drop
@@ -1386,6 +1603,8 @@ dispatch_l1() { # one parallel pass; idempotent worker → only the still-missin
         echo "FAIL: $session ($hash) — see $errlog" >&2
       fi
     fi
+    # Chunk scratch is only worth keeping while a retry is still pending.
+    if [ -s "$output" ] && [ -n "$chunkroot" ]; then rm -rf "$chunkroot"; fi
   ' _ {}
 }
 
@@ -1551,7 +1770,7 @@ run() {
   fi
   COUNT=$(wc -l < "$SESSIONS_LIST" | tr -d ' ')
   SKIPPED_EMPTY=$(( COUNT_AFTER_PRUNE - COUNT ))
-  log "found $RAW session files; excluded $EXCLUDED autodream-own, skipped $SKIPPED_EMPTY empty; $COUNT to triage"
+  log "found $RAW session files; excluded $EXCLUDED autodream-own, skipped $SKIPPED_EMPTY empty; $COUNT to triage; $OUT_OF_WINDOW out of window (modified later, nothing inside the day)"
 
   if [ "$COUNT" -eq 0 ]; then
     log "no sessions to triage; writing stub report and exiting"
@@ -1575,6 +1794,7 @@ run() {
       # identical to a night with no files at all.
       printf 'self_sessions_excluded: %s\n' "$EXCLUDED"
       printf 'sessions_skipped_empty: %s\n' "$SKIPPED_EMPTY"
+      printf 'sessions_out_of_window: %s\n' "$OUT_OF_WINDOW"
       printf 'sessions_rejected_path: %s\n' "$REJECTED_PATHS"
       printf 'sessions_duplicate_path: %s\n' "$DUPLICATE_PATHS"
       printf 'sessions_hash_collision: %s\n' "$HASH_COLLISIONS"
@@ -1604,6 +1824,9 @@ run() {
       printf 'sessions_dropped_after_failures: 0\n'
       printf 'gated: 0\n'
       printf 'l1_rounds_max: %s\n' "${AUTODREAM_L1_ROUNDS:-5}"
+      printf 'l1_escalated: 0\n'
+      printf 'l1_escalate_mode: %s\n' "${AUTODREAM_L1_ESCALATE:-friction}"
+      printf 'l1_chunks_elided: 0\n'
       printf 'l1_rounds_used: 0\n'
       printf 'l1_findings_written: 0\n'
       printf 'l1_missing_after_retries: 0\n'
@@ -1681,6 +1904,7 @@ EOF
   # runs inside dispatch_l1 below — gated sessions' sidecars still exist and still
   # participate in overlap (see the comment in bin/overlap-stats.sh).
   compute_overlap_stats
+  select_escalations
 
   # ---- Session provenance, fixed before any model runs ----
   SESSION_ROWS=""
@@ -1697,7 +1921,7 @@ EOF
   # and require an API key). Exported once so both the L1 xargs subshells and the L2
   # call inherit it.
   export CLAUDE_CODE_DISABLE_CLAUDE_MDS=1 DISABLE_TELEMETRY=1 DISABLE_ERROR_REPORTING=1
-  export CLAUDE_BIN AUTODREAM_DIR FINDINGS_DIR SLIM WORK_DIR L1_INVOKE_LIB
+  export CLAUDE_BIN AUTODREAM_DIR FINDINGS_DIR SLIM SESSION_WINDOW CHUNKER MERGER L1_COVERAGE ESCALATE_LIST WORK_DIR L1_INVOKE_LIB
   # AUTODREAM_L1_ROUNDS is referenced by the dispatcher subshell to decide
   # whether this is the last retry round (gates the metadata-stub fallback).
   export AUTODREAM_L1_ROUNDS
@@ -1747,6 +1971,10 @@ EOF
   # an independent xargs subshell with no shared state to increment.
   GATED=$(find "$FINDINGS_DIR" -type f -name '*.json' ! -name '*.stats.json' ! -name 'memory-candidates.json' \
     -exec grep -l '"skipped": *"below_noise_gate"' {} + 2>/dev/null | wc -l | tr -d " ")
+  # Sessions whose chunk cap dropped the middle: stated in the findings meta and counted
+  # here, so a degraded read cannot pass as a complete one.
+  L1_CHUNKS_ELIDED=$(find "$FINDINGS_DIR" -maxdepth 1 -type f -name '*.json' ! -name '*.stats.json' ! -name 'memory-candidates.json' \
+    -exec jq -e '(.meta.chunks_elided // 0) > 0' {} \; 2>/dev/null | grep -c '^true$')
   log "L1 done in ${L1_ELAPSED}s: $L1_OK done ($L1_ERRORED with errors, $GATED gated), $MISSING missing (.err files: $L1_FAIL)"
 
   # ---- Oversized-transcript measurement gate (#12) ----
@@ -1953,6 +2181,7 @@ PY
     printf 'sessions_hash_collision: %s\n' "$HASH_COLLISIONS"
     printf 'self_sessions_excluded: %s\n' "$EXCLUDED"
     printf 'sessions_skipped_empty: %s\n' "$SKIPPED_EMPTY"
+    printf 'sessions_out_of_window: %s\n' "$OUT_OF_WINDOW"
     printf 'sessions_triaged: %s\n' "$COUNT"
     # Sessions within sessions_triaged that were skipped before any model call
     # (noise gate). Structurally cannot appear in l1_findings_with_error since
@@ -1967,6 +2196,9 @@ PY
     printf 'sessions_dropped_after_failures: %s\n' "$DROPPED_AFTER_FAILURES"
     printf 'l1_rounds_used: %s\n' "$round"
     printf 'l1_rounds_max: %s\n' "$L1_ROUNDS"
+    printf 'l1_escalated: %s\n' "$ESCALATED"
+    printf 'l1_escalate_mode: %s\n' "${AUTODREAM_L1_ESCALATE:-friction}"
+    printf 'l1_chunks_elided: %s\n' "$L1_CHUNKS_ELIDED"
     printf 'l1_findings_written: %s\n' "$L1_OK"
     printf 'l1_findings_with_error: %s\n' "$L1_ERRORED"
     # Oversized-transcript measurement gate (#12) — see the computation above L1_ERRORED

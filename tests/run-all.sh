@@ -60,16 +60,16 @@ mk_trivial_session(){ # $1=root $2=name — single user turn, no tool calls: bel
 mk_short_duration_session(){ # $1=root $2=name — 2 user turns, 5s apart: gates on duration alone
   local f="$1/projects/proj-a/$2.jsonl"
   printf '%s\n' \
-    '{"type":"user","timestamp":"2026-07-20T10:00:00Z","message":{"content":"quick check"}}' \
-    '{"type":"user","timestamp":"2026-07-20T10:00:05Z","message":{"content":"thanks bye"}}' \
+    '{"type":"user","timestamp":"2020-01-02T12:00:00Z","message":{"content":"quick check"}}' \
+    '{"type":"user","timestamp":"2020-01-02T12:00:05Z","message":{"content":"thanks bye"}}' \
     > "$f"
   touch -t "$STAMP" "$f"
 }
 mk_subagent_session(){ # $1=root $2=name — isSidechain + >=5 tool calls: carve-out, never gated
   local f="$1/projects/proj-a/$2.jsonl"
   printf '%s\n' \
-    '{"type":"user","isSidechain":true,"timestamp":"2026-07-20T10:00:00Z","message":{"content":"subagent task"}}' \
-    '{"type":"assistant","isSidechain":true,"timestamp":"2026-07-20T10:00:05Z","message":{"content":[{"type":"tool_use","name":"Read"},{"type":"tool_use","name":"Write"},{"type":"tool_use","name":"Bash"},{"type":"tool_use","name":"Grep"},{"type":"tool_use","name":"Edit"}]}}' \
+    '{"type":"user","isSidechain":true,"timestamp":"2020-01-02T12:00:00Z","message":{"content":"subagent task"}}' \
+    '{"type":"assistant","isSidechain":true,"timestamp":"2020-01-02T12:00:05Z","message":{"content":[{"type":"tool_use","name":"Read"},{"type":"tool_use","name":"Write"},{"type":"tool_use","name":"Bash"},{"type":"tool_use","name":"Grep"},{"type":"tool_use","name":"Edit"}]}}' \
     > "$f"
   touch -t "$STAMP" "$f"
 }
@@ -1584,8 +1584,8 @@ test_overlap_pair(){
   # A: 10:00, 10:20   B: 10:05, 10:25 — every A/B turn combo is within 30 min
   # (A0-B0=5m, A0-B1=25m, A1-B0=15m, A1-B1=5m), so four turn-pairs qualify but
   # the {A,B} pair must be counted exactly once.
-  mk_timed_session "$root" sessA "2026-07-20T10:00:00Z" "2026-07-20T10:20:00Z"
-  mk_timed_session "$root" sessB "2026-07-20T10:05:00Z" "2026-07-20T10:25:00Z"
+  mk_timed_session "$root" sessA "2020-01-02T12:00:00Z" "2020-01-02T12:20:00Z"
+  mk_timed_session "$root" sessB "2020-01-02T12:05:00Z" "2020-01-02T12:25:00Z"
   run_dream "$root"
   local stats="$(fdir "$root")/run-stats.txt"
   assert_grep "$stats" 'overlap_measured: yes'     "a real overlap measurement happened"
@@ -1598,9 +1598,9 @@ test_overlap_triple(){
   echo "# overlap (#14): three pairwise-overlapping sessions -> 3 pairs, 3 sessions"
   local root; root=$(setup_env)
   # A@10:00, B@10:10, C@10:20 — every pair (A-B=10m, B-C=10m, A-C=20m) is within 30 min.
-  mk_timed_session "$root" sessA "2026-07-20T10:00:00Z"
-  mk_timed_session "$root" sessB "2026-07-20T10:10:00Z"
-  mk_timed_session "$root" sessC "2026-07-20T10:20:00Z"
+  mk_timed_session "$root" sessA "2020-01-02T12:00:00Z"
+  mk_timed_session "$root" sessB "2020-01-02T12:10:00Z"
+  mk_timed_session "$root" sessC "2020-01-02T12:20:00Z"
   run_dream "$root"
   local stats="$(fdir "$root")/run-stats.txt"
   assert_grep "$stats" 'overlap_measured: yes'     "a real overlap measurement happened"
@@ -1612,8 +1612,8 @@ test_overlap_triple(){
 test_overlap_none(){
   echo "# overlap (#14): sessions more than 30 minutes apart -> both stats 0, keys still present"
   local root; root=$(setup_env)
-  mk_timed_session "$root" sessA "2026-07-20T10:00:00Z"
-  mk_timed_session "$root" sessB "2026-07-20T11:00:00Z"
+  mk_timed_session "$root" sessA "2020-01-02T12:00:00Z"
+  mk_timed_session "$root" sessB "2020-01-02T13:00:00Z"
   run_dream "$root"
   local stats="$(fdir "$root")/run-stats.txt"
   # This is the genuine-zero case (#26): the pass DID run, it just found nothing to
@@ -1628,8 +1628,8 @@ test_overlap_none(){
 test_overlap_not_measured_missing_bin(){
   echo "# overlap (#26): AUTODREAM_OVERLAP_BIN pointed at a nonexistent path -> not measured, counts still 0"
   local root; root=$(setup_env)
-  mk_timed_session "$root" sessA "2026-07-20T10:00:00Z"
-  mk_timed_session "$root" sessB "2026-07-20T10:05:00Z"
+  mk_timed_session "$root" sessA "2020-01-02T12:00:00Z"
+  mk_timed_session "$root" sessB "2020-01-02T12:05:00Z"
   export AUTODREAM_OVERLAP_BIN="$root/does-not-exist.sh"; run_dream "$root"; unset AUTODREAM_OVERLAP_BIN
   local stats="$(fdir "$root")/run-stats.txt"
   assert_grep "$stats" 'overlap_measured: no'      "missing overlap-stats.sh binary is not a measurement"
@@ -1641,8 +1641,8 @@ test_overlap_not_measured_missing_bin(){
 test_overlap_not_measured_empty_output(){
   echo "# overlap (#26): overlap-stats.sh stub that prints nothing -> not measured"
   local root; root=$(setup_env)
-  mk_timed_session "$root" sessA "2026-07-20T10:00:00Z"
-  mk_timed_session "$root" sessB "2026-07-20T10:05:00Z"
+  mk_timed_session "$root" sessA "2020-01-02T12:00:00Z"
+  mk_timed_session "$root" sessB "2020-01-02T12:05:00Z"
   local stub="$root/overlap-empty.sh"
   printf '#!/bin/bash\nexit 0\n' > "$stub"
   chmod +x "$stub"
@@ -1657,8 +1657,8 @@ test_overlap_not_measured_empty_output(){
 test_overlap_not_measured_malformed_output(){
   echo "# overlap (#26): overlap-stats.sh stub that prints non-JSON -> not measured"
   local root; root=$(setup_env)
-  mk_timed_session "$root" sessA "2026-07-20T10:00:00Z"
-  mk_timed_session "$root" sessB "2026-07-20T10:05:00Z"
+  mk_timed_session "$root" sessA "2020-01-02T12:00:00Z"
+  mk_timed_session "$root" sessB "2020-01-02T12:05:00Z"
   local stub="$root/overlap-malformed.sh"
   printf '#!/bin/bash\necho "not json at all"\n' > "$stub"
   chmod +x "$stub"
@@ -1675,10 +1675,450 @@ test_overlap_not_measured_malformed_output(){
 [ -x "$RUN" ]  || { echo "FATAL: $RUN not executable"; exit 1; }
 [ -x "$MOCK" ] || { echo "FATAL: $MOCK not executable"; exit 1; }
 
+# ---- Report-day window: a session is selected by what is IN it, not by its mtime ----
+# Enumeration used `-newermt DAY ! -newermt NEXT`. A multi-day orchestrator is still
+# being written, so its mtime is after the day ends and it was never enumerated, while
+# its subagents were. The parent finally arrived as one 208 MB blob. Dropping the upper
+# bound is only safe because a window gate on in-transcript timestamps replaces it, so
+# the three cases below are the three ways that swap can go wrong.
+test_session_stats_window(){
+  echo "# session stats are computed over the report-day slice when a window is set"
+  local root; root=$(mktemp -d "${TMPDIR:-/tmp}/ccad.XXXXXX")
+  local fixture="$root/spans.jsonl" out="$root/spans.stats.json" raw
+  printf '%s\n' \
+    '{"type":"user","timestamp":"2020-01-01T10:00:00Z","message":{"content":"day one"}}' \
+    '{"type":"assistant","timestamp":"2020-01-01T10:01:00Z","message":{"model":"claude-opus","content":[{"type":"tool_use","name":"Read"}]}}' \
+    '{"type":"user","timestamp":"2020-01-02T10:00:00Z","message":{"content":"day two a"}}' \
+    '{"type":"assistant","timestamp":"2020-01-02T10:05:00Z","message":{"model":"claude-opus","content":[{"type":"tool_use","name":"Bash"}]}}' \
+    '{"type":"user","timestamp":"2020-01-02T10:30:00Z","message":{"content":"day two b"}}' \
+    '{"type":"user","timestamp":"2020-01-03T10:00:00Z","message":{"content":"day three"}}' \
+    '{"type":"assistant","timestamp":"2020-01-03T10:01:00Z","message":{"model":"claude-opus","content":[{"type":"tool_use","name":"Edit"}]}}' > "$fixture"
+  raw=$(wc -c < "$fixture" | tr -d ' ')
+  "$REPO/bin/session-stats.sh" "$fixture" "$out"
+  assert_eq "$(jq -r .user_message_count "$out")" "4" "control: no window, all four user turns counted"
+  assert_eq "$(jq -c .tools_used "$out")" '["Bash","Edit","Read"]' "control: no window, every tool counted"
+  # 2020-01-02 in UTC
+  TZ=UTC AUTODREAM_WINDOW_START_EPOCH=1577923200 AUTODREAM_WINDOW_END_EPOCH=1578009600 \
+    "$REPO/bin/session-stats.sh" "$fixture" "$out"
+  assert_eq "$(jq -r .user_message_count "$out")" "2" "windowed: only the two user turns inside the day"
+  assert_eq "$(jq -r .tool_call_count "$out")" "1" "windowed: one tool call inside the day"
+  assert_eq "$(jq -c .tools_used "$out")" '["Bash"]' "windowed: tools_used is the day's, not the file's"
+  assert_eq "$(jq -r .duration_minutes "$out")" "30" "windowed: duration is the slice's 30 minutes"
+  assert_eq "$(jq -r '.user_turn_timestamps | length' "$out")" "2" "windowed: overlap timestamps are the day's"
+  assert_eq "$(jq -r .transcript_bytes "$out")" "$raw" "windowed: transcript_bytes stays the RAW file size (the oversized gate keys on it)"
+  rm -rf "$root"
+}
+
+test_day_window(){
+  echo "# a session is selected by its in-transcript timestamps, not by its file mtime"
+  local root; root=$(setup_env)
+  local d="$root/projects/proj-a"
+  export TZ=UTC   # the day is local midnight to local midnight; pin it so the fixture clock is exact
+  # (a) an orchestrator spanning three days, file modified AFTER the report day: the missing parent
+  mk_timed_session "$root" orchestrator 2020-01-01T12:00:00Z 2020-01-02T12:00:00Z 2020-01-02T12:30:00Z 2020-01-03T12:00:00Z
+  touch -t 202001041200 "$d/orchestrator.jsonl"
+  # (b) modified after the day but every record earlier: must NOT be re-triaged every night
+  mk_timed_session "$root" stale 2019-12-30T12:00:00Z 2019-12-31T12:00:00Z
+  touch -t 202001041200 "$d/stale.jsonl"
+  # (c) no timestamps at all: nothing to judge by, triaged exactly as before
+  mk_session "$root" noclock
+  run_dream "$root"
+  unset TZ
+  local ho hs hn; ho=$(hash_of "$d/orchestrator.jsonl"); hs=$(hash_of "$d/stale.jsonl"); hn=$(hash_of "$d/noclock.jsonl")
+  assert_file    "$(fdir "$root")/$ho.json" "the multi-day orchestrator (mtime after the day) is triaged"
+  assert_no_file "$(fdir "$root")/$hs.json" "a stale file modified after the day but untouched in it is NOT triaged"
+  assert_file    "$(fdir "$root")/$hn.json" "a transcript with no clock is still triaged"
+  assert_grep    "$(fdir "$root")/run-stats.txt" 'sessions_out_of_window: 1' "the skip is counted, so it cannot read as a quiet night"
+  assert_grep    "$root/run.out" 'out of window' "and the log says why"
+  assert_eq "$(jq -r .user_message_count "$(fdir "$root")/$ho.stats.json")" "2" "its stats cover the day only (2 of 4 user turns)"
+  rm -rf "$root"
+}
+
+# ---- Chunked triage: a session too big for one worker is read in full, in chunks ----
+# The slimmer used to keep 400 head + 200 tail lines and elide the rest, so a long
+# session was judged on about 2% of its conversation. Now the whole conversation is
+# kept and split at line boundaries, one worker per chunk, merged mechanically back
+# into the ONE findings JSON per session that L2 reads. What can go wrong is all in the
+# seams: a failed chunk must not publish a partial session, a retry must not redo the
+# chunks that already answered, and chunk outputs must never look like sessions.
+mk_big_session(){ # $1=root $2=name -> 30 timestamped conversation lines, mtime in the report day
+  local f="$1/projects/proj-a/$2.jsonl" i
+  : > "$f"
+  for i in $(seq 1 30); do
+    printf '{"type":"user","timestamp":"2020-01-02T12:%02d:00Z","message":{"role":"user","content":"turn %d padding padding padding padding padding"}}\n' "$i" "$i" >> "$f"
+  done
+  touch -t "$STAMP" "$f"
+}
+test_chunked_session(){
+  echo "# an oversized session is read in chunks and merged back into ONE findings JSON"
+  local root; root=$(setup_env); mk_big_session "$root" big
+  local f="$root/projects/proj-a/big.jsonl" calls="$root/calls.log"
+  export TZ=UTC MOCK_MODE=chunked MOCK_CALL_LOG="$calls" AUTODREAM_SLIM_BYTES=2000 AUTODREAM_L1_CHUNK_BYTES=700
+  run_dream "$root"
+  unset TZ MOCK_MODE MOCK_CALL_LOG AUTODREAM_SLIM_BYTES AUTODREAM_L1_CHUNK_BYTES
+  local h fj n; h=$(hash_of "$f"); fj="$(fdir "$root")/$h.json"
+  assert_file "$fj" "the session produced ONE findings JSON"
+  n=$(grep -c '\.chunks/' "$calls" 2>/dev/null); case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  [ "${n:-0}" -gt 1 ] && ok "the worker was called once per chunk ($n chunks)" || no "the worker was called once per chunk (got ${n:-0} calls)"
+  assert_eq "$(jq -r .meta.chunks "$fj")" "$n" "meta.chunks equals the number of worker calls"
+  assert_eq "$(jq -r .session_path "$fj")" "$f" "session_path is the original transcript, not a chunk"
+  assert_eq "$(jq -r .underlying_goal "$fj")" "goal-1" "the goal comes from the first chunk"
+  assert_eq "$(jq -r .outcome "$fj")" "fully_achieved" "the outcome comes from the last chunk"
+  assert_eq "$(jq -r '.findings | length' "$fj")" "$((n + 1))" "one finding per chunk plus the shared one, de-duplicated"
+  assert_eq "$(find "$(fdir "$root")" -name '*.json' ! -name '*.stats.json' ! -name 'memory-candidates.json' | wc -l | tr -d ' ')" "1" \
+    "no chunk output ever looks like a findings JSON (L2 globs this directory)"
+  assert_eq "$(find "$(fdir "$root")/.chunks" -type f 2>/dev/null | wc -l | tr -d ' ')" "0" "chunk scratch is cleaned up after a successful merge"
+  rm -rf "$root"
+}
+test_chunk_retry_reuses_finished_chunks(){
+  echo "# a chunk that fails is retried alone; chunks that answered are not redone"
+  local root; root=$(setup_env); mk_big_session "$root" big
+  local f="$root/projects/proj-a/big.jsonl" calls="$root/calls.log"
+  export TZ=UTC MOCK_MODE=chunked MOCK_FAIL_CHUNK=2 MOCK_CALL_LOG="$calls" AUTODREAM_SLIM_BYTES=2000 AUTODREAM_L1_CHUNK_BYTES=700 AUTODREAM_L1_ROUNDS=2
+  run_dream "$root"
+  unset TZ MOCK_MODE MOCK_FAIL_CHUNK MOCK_CALL_LOG AUTODREAM_SLIM_BYTES AUTODREAM_L1_CHUNK_BYTES AUTODREAM_L1_ROUNDS
+  local h fj n total; h=$(hash_of "$f"); fj="$(fdir "$root")/$h.json"
+  assert_file "$fj" "round 2 completed the session"
+  n=$(jq -r '.meta.chunks // 0' "$fj" 2>/dev/null); case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  total=$(wc -l < "$calls" 2>/dev/null | tr -d ' '); case "$total" in ''|*[!0-9]*) total=0 ;; esac
+  assert_eq "$total" "$((n + 1))" "exactly one extra worker call: chunk 2 only"
+  assert_eq "$(grep -c '/02-' "$calls")" "2" "chunk 2 was invoked twice, every other chunk once"
+  assert_eq "$(jq -r '.findings | length' "$fj")" "$((n + 1))" "and the merged result is complete"
+  rm -rf "$root"
+}
+test_chunk_failure_never_publishes_a_partial_session(){
+  echo "# a chunk that never answers leaves an honest stub, not a partial merge"
+  local root; root=$(setup_env); mk_big_session "$root" big
+  local f="$root/projects/proj-a/big.jsonl"
+  export TZ=UTC MOCK_MODE=chunked MOCK_FAIL_CHUNK=2 AUTODREAM_SLIM_BYTES=2000 AUTODREAM_L1_CHUNK_BYTES=700 AUTODREAM_L1_ROUNDS=1
+  run_dream "$root"
+  unset TZ MOCK_MODE MOCK_FAIL_CHUNK AUTODREAM_SLIM_BYTES AUTODREAM_L1_CHUNK_BYTES AUTODREAM_L1_ROUNDS
+  local h fj; h=$(hash_of "$f"); fj="$(fdir "$root")/$h.json"
+  assert_file "$fj" "the final round writes the metadata stub"
+  assert_grep "$fj" 'worker exited without findings JSON' "and it is the error stub"
+  assert_eq "$(jq -r 'has("meta") and (.meta | has("chunks"))' "$fj")" "false" "it is NOT a merge of the chunks that did answer"
+  assert_eq "$(jq -r '.findings | length' "$fj")" "0" "with no findings"
+  assert_eq "$(find "$(fdir "$root")/.chunks" -type f 2>/dev/null | wc -l | tr -d ' ')" "0" "and no chunk scratch is left behind"
+  rm -rf "$root"
+}
+test_small_session_is_not_chunked(){
+  echo "# a session that fits one worker is read whole, with no chunk note"
+  local root; root=$(setup_env); mk_big_session "$root" big
+  local f="$root/projects/proj-a/big.jsonl" calls="$root/calls.log" cap="$root/cap"; mkdir -p "$cap"
+  export TZ=UTC MOCK_MODE=chunked MOCK_CALL_LOG="$calls" MOCK_CAPTURE_DIR="$cap" AUTODREAM_SLIM_BYTES=2000 AUTODREAM_L1_CHUNK_BYTES=1000000
+  run_dream "$root"
+  unset TZ MOCK_MODE MOCK_CALL_LOG MOCK_CAPTURE_DIR AUTODREAM_SLIM_BYTES AUTODREAM_L1_CHUNK_BYTES
+  assert_eq "$(wc -l < "$calls" | tr -d ' ')" "1" "one worker call"
+  assert_nogrep "$cap/l1-stdin.txt" 'of ONE session' "the prompt carries no chunk note"
+  assert_eq "$(jq -r 'has("meta")' "$(fdir "$root")/$(hash_of "$f").json")" "false" "and the findings carry no chunk meta"
+  rm -rf "$root"
+}
+
+# ---- Friction signals and model escalation ------------------------------------------
+# Haiku missed a real permission-gate finding that Opus reported from the same input
+# (one session, one run each), so a stronger model is spent where friction was MEASURED.
+# The signal is counted from is_error:true tool_result blocks, never grepped from the
+# transcript: a session whose system prompt or discussion merely mentions "permission"
+# has no friction, and escalating on that would spend Opus on the wrong sessions.
+test_session_stats_friction(){
+  echo "# friction counts come from is_error tool_result blocks only, and a denial is the harness own wording"
+  local root; root=$(mktemp -d "${TMPDIR:-/tmp}/ccad.XXXXXX")
+  local fixture="$root/friction.jsonl" out="$root/friction.stats.json"
+  # Wordings are real, sampled from this host transcripts (2026-10-02). The permission
+  # pattern first matched bare "permission|denied", which also scored EACCES, git
+  # "Permission denied (publickey)" and an unrelated SendMessage error that merely
+  # contains the word permission, each at weight 3 (found in review).
+  printf '%s\n' \
+    '{"type":"user","timestamp":"2020-01-02T12:00:00Z","message":{"content":"the word permission denied appears in my own message"}}' \
+    '{"type":"assistant","timestamp":"2020-01-02T12:00:05Z","message":{"content":[{"type":"text","text":"Permission was denied by auto mode, says this assistant prose"}]}}' \
+    '{"type":"user","timestamp":"2020-01-02T12:01:00Z","message":{"content":[{"type":"tool_result","tool_use_id":"a","is_error":true,"content":"Permission to use Bash has been denied."}]}}' \
+    '{"type":"user","timestamp":"2020-01-02T12:02:00Z","message":{"content":[{"type":"tool_result","tool_use_id":"b","is_error":true,"content":[{"type":"text","text":"Error: file not found"}]}]}}' \
+    '{"type":"user","timestamp":"2020-01-02T12:03:00Z","message":{"content":[{"type":"tool_result","tool_use_id":"c","is_error":true,"content":[{"type":"text","text":"The action was blocked: not allowed in auto mode"}]}]}}' \
+    '{"type":"user","timestamp":"2020-01-02T12:04:00Z","message":{"content":[{"type":"tool_result","tool_use_id":"d","is_error":false,"content":"Permission for this action was denied is only a string in a successful result"}]}}' \
+    '{"type":"user","timestamp":"2020-01-03T12:00:00Z","message":{"content":[{"type":"tool_result","tool_use_id":"e","is_error":true,"content":"Error the next day"}]}}' \
+    '{"type":"user","timestamp":"2020-01-02T12:05:00Z","message":{"content":[{"type":"tool_result","tool_use_id":"f","is_error":true,"content":"Permission for this action was denied by the Claude Code auto mode classifier. Reason: [Production Deploy]. If you intended this, ask the user."}]}}' \
+    '{"type":"user","timestamp":"2020-01-02T12:06:00Z","message":{"content":[{"type":"tool_result","tool_use_id":"g","is_error":true,"content":"EACCES: permission denied, open /etc/hosts"}]}}' \
+    '{"type":"user","timestamp":"2020-01-02T12:07:00Z","message":{"content":[{"type":"tool_result","tool_use_id":"h","is_error":true,"content":"git@github.com: Permission denied (publickey)."}]}}' \
+    '{"type":"user","timestamp":"2020-01-02T12:08:00Z","message":{"content":[{"type":"tool_result","tool_use_id":"i","is_error":true,"content":"<tool_use_error>message text must not be a teammate protocol frame (permission/mode/plan/shutdown JSON)</tool_use_error>"}]}}' \
+    '{"type":"user","timestamp":"2020-01-02T12:09:00Z","message":{"content":[{"type":"tool_result","tool_use_id":"j","is_error":true,"content":"The server-side auto mode classifier gave no verdict (error), so auto mode cannot determine the safety of Bash."}]}}' \
+    '{"type":"user","timestamp":"2020-01-02T12:10:00Z","message":{"content":[{"type":"tool_result","tool_use_id":"k","is_error":true,"content":"The command was denied by a built-in Claude Code safety check."}]}}' \
+    '{"type":"user","timestamp":"2020-01-02T12:11:00Z","message":{"content":[{"type":"tool_result","tool_use_id":"l","is_error":true,"content":"Claude requested permissions to use Bash, but you haven\u0027t granted it yet."}]}}' \
+    '{"type":"user","timestamp":"2020-01-02T12:12:00Z","message":{"content":[{"type":"tool_result","tool_use_id":"m","is_error":true,"content":"Claude requested permissions to write to /x/y, but you haven\u0027t granted it yet."}]}}' \
+    '{"type":"user","timestamp":"2020-01-02T12:13:00Z","message":{"content":[{"type":"tool_result","tool_use_id":"n","is_error":true,"content":"The request was denied by a built-in firewall rule."}]}}' > "$fixture"
+  "$REPO/bin/session-stats.sh" "$fixture" "$out"
+  assert_eq "$(jq -r .error_result_count "$out")" "13" "thirteen is_error results; the is_error:false one and all prose are not counted"
+  assert_eq "$(jq -r .permission_denial_count "$out")" "7" "seven are harness denials (to use / for this action / not allowed in auto mode / classifier no verdict / denied by a built-in check / headless requested-permissions to use and to write to); EACCES, publickey, the SendMessage error and an unrelated built-in firewall denial are not"
+  TZ=UTC AUTODREAM_WINDOW_START_EPOCH=1577923200 AUTODREAM_WINDOW_END_EPOCH=1578009600 "$REPO/bin/session-stats.sh" "$fixture" "$out"
+  assert_eq "$(jq -r .error_result_count "$out")" "12" "windowed to 2020-01-02: the next day error is not counted"
+  printf '%s\n' '{"type":"user","message":{"content":"quiet"}}' > "$fixture"
+  "$REPO/bin/session-stats.sh" "$fixture" "$out"
+  assert_eq "$(jq -r '[.error_result_count, .permission_denial_count] | @csv' "$out")" "0,0" "a session with no errors reports 0,0 (keys always present)"
+  rm -rf "$root"
+}
+mk_friction_session(){ # $1=root $2=name $3=is_error results $4=of which permission denials
+  local f="$1/projects/proj-a/$2.jsonl" i msg
+  printf '%s\n' \
+    '{"type":"user","timestamp":"2020-01-02T12:00:00Z","message":{"content":"start"}}' \
+    '{"type":"user","timestamp":"2020-01-02T12:00:10Z","message":{"content":"continue"}}' > "$f"
+  for i in $(seq 1 "$3"); do
+    if [ "$i" -le "$4" ]; then msg="Permission to use Bash has been denied."; else msg="Error: command failed with exit code 1"; fi
+    printf '{"type":"assistant","timestamp":"2020-01-02T12:01:%02dZ","message":{"content":[{"type":"tool_use","id":"t%d","name":"Bash","input":{"command":"x"}}]}}\n' "$i" "$i" >> "$f"
+    printf '{"type":"user","timestamp":"2020-01-02T12:02:%02dZ","message":{"content":[{"type":"tool_result","tool_use_id":"t%d","is_error":true,"content":"%s"}]}}\n' "$i" "$i" "$msg" >> "$f"
+  done
+  touch -t "$STAMP" "$f"
+}
+model_for(){ # $1=root $2=session name -> the model the L1 worker was asked for ("" if never called)
+  grep -F "$(hash_of "$1/projects/proj-a/$2.jsonl").json" "$1/models.log" 2>/dev/null | head -1 | cut -f2
+}
+test_escalation_friction(){
+  echo "# default: Opus only for sessions whose measured friction clears the bar"
+  local root; root=$(setup_env)
+  mk_friction_session "$root" hot 10 0       # score 10
+  mk_friction_session "$root" warm 3 2       # score 3 + 3*2 = 9
+  mk_friction_session "$root" cool 2 0       # score 2
+  mk_session "$root" quiet                   # no friction at all
+  export TZ=UTC MOCK_MODEL_LOG="$root/models.log"
+  run_dream "$root"
+  unset TZ MOCK_MODEL_LOG
+  assert_eq "$(model_for "$root" hot)" "claude-opus-5-5" "10 errors -> escalated"
+  assert_eq "$(model_for "$root" warm)" "claude-opus-5-5" "3 errors + 2 denials (weighted 9) -> escalated"
+  assert_eq "$(model_for "$root" cool)" "claude-haiku-4-5" "2 errors -> stays on Haiku"
+  assert_eq "$(model_for "$root" quiet)" "claude-haiku-4-5" "no friction -> stays on Haiku"
+  assert_grep "$(fdir "$root")/run-stats.txt" 'l1_escalated: 2' "run-stats counts the escalations"
+  rm -rf "$root"
+}
+test_escalation_off_and_all(){
+  echo "# off never escalates; all always does"
+  local root; root=$(setup_env)
+  mk_friction_session "$root" hot 10 0
+  mk_session "$root" quiet
+  export TZ=UTC MOCK_MODEL_LOG="$root/models.log" AUTODREAM_L1_ESCALATE=off
+  run_dream "$root"
+  unset TZ MOCK_MODEL_LOG AUTODREAM_L1_ESCALATE
+  assert_eq "$(model_for "$root" hot)" "claude-haiku-4-5" "off: even the hottest session stays on Haiku"
+  assert_grep "$(fdir "$root")/run-stats.txt" 'l1_escalated: 0' "off: nothing counted"
+  rm -rf "$root"
+  root=$(setup_env)
+  mk_friction_session "$root" hot 10 0
+  mk_session "$root" quiet
+  export TZ=UTC MOCK_MODEL_LOG="$root/models.log" AUTODREAM_L1_ESCALATE=all
+  run_dream "$root"
+  unset TZ MOCK_MODEL_LOG AUTODREAM_L1_ESCALATE
+  assert_eq "$(model_for "$root" quiet)" "claude-opus-5-5" "all: even a session with no friction gets Opus"
+  assert_eq "$(model_for "$root" hot)" "claude-opus-5-5" "all: and the hot one"
+  rm -rf "$root"
+}
+test_escalation_cap_and_overrides(){
+  echo "# the per-run cap keeps the hottest sessions; the model and bar are configurable"
+  local root; root=$(setup_env)
+  mk_friction_session "$root" hotter 14 0
+  mk_friction_session "$root" hot 10 0
+  export TZ=UTC MOCK_MODEL_LOG="$root/models.log" AUTODREAM_L1_ESCALATE_MAX=1 AUTODREAM_L1_ESCALATE_MODEL=claude-sonnet-5-5
+  run_dream "$root"
+  unset TZ MOCK_MODEL_LOG AUTODREAM_L1_ESCALATE_MAX AUTODREAM_L1_ESCALATE_MODEL
+  assert_eq "$(model_for "$root" hotter)" "claude-sonnet-5-5" "cap 1: the hottest session gets the configured escalation model"
+  assert_eq "$(model_for "$root" hot)" "claude-haiku-4-5" "cap 1: the second-hottest does not"
+  assert_grep "$(fdir "$root")/run-stats.txt" 'l1_escalated: 1' "and only one is counted"
+  rm -rf "$root"
+  root=$(setup_env)
+  mk_friction_session "$root" hot 10 0
+  export TZ=UTC MOCK_MODEL_LOG="$root/models.log" AUTODREAM_L1_ESCALATE_MIN=11
+  run_dream "$root"
+  unset TZ MOCK_MODEL_LOG AUTODREAM_L1_ESCALATE_MIN
+  assert_eq "$(model_for "$root" hot)" "claude-haiku-4-5" "a raised bar (11) leaves a score-10 session on Haiku"
+  rm -rf "$root"
+}
+
+# ---- Chunk answers are untrusted: validate before reuse and before merge --------------
+# Found in review: a chunk answer that was an error object, had no findings, or carried a
+# wrongly typed field passed the "is it a JSON object" test, so it was reused on every
+# round (never retried) and the merge either skipped it, publishing a session from part
+# of its chunks, or crashed and lost every chunk. Retrying is the only honest answer.
+test_chunk_bad_answers_are_retried(){
+  echo "# a chunk answer that is an error, has no findings, or is malformed is retried, never merged around"
+  local kind root f calls fj n total
+  for kind in error nofindings typed; do
+    root=$(setup_env); mk_big_session "$root" big
+    f="$root/projects/proj-a/big.jsonl"; calls="$root/calls.log"
+    export TZ=UTC MOCK_MODE=chunked MOCK_BAD_CHUNK=2 MOCK_BAD_KIND="$kind" MOCK_CALL_LOG="$calls" AUTODREAM_SLIM_BYTES=2000 AUTODREAM_L1_CHUNK_BYTES=700 AUTODREAM_L1_ROUNDS=2
+    run_dream "$root"
+    unset TZ MOCK_MODE MOCK_BAD_CHUNK MOCK_BAD_KIND MOCK_CALL_LOG AUTODREAM_SLIM_BYTES AUTODREAM_L1_CHUNK_BYTES AUTODREAM_L1_ROUNDS
+    fj="$(fdir "$root")/$(hash_of "$f").json"
+    n=$(jq -r '.meta.chunks // 0' "$fj" 2>/dev/null); case "$n" in ''|*[!0-9]*) n=0 ;; esac
+    total=$(wc -l < "$calls" 2>/dev/null | tr -d ' '); case "$total" in ''|*[!0-9]*) total=0 ;; esac
+    assert_eq "$(jq -r '.meta.chunks_ok' "$fj" 2>/dev/null)" "$n" "($kind) every chunk had answered properly by the end"
+    assert_eq "$(jq -r 'has("error")' "$fj" 2>/dev/null)" "false" "($kind) the published session carries no error"
+    assert_eq "$total" "$((n + 1))" "($kind) exactly one extra worker call: the bad chunk, redone"
+    rm -rf "$root"
+  done
+}
+test_chunk_bad_answer_on_the_last_round_is_a_stub(){
+  echo "# a chunk that only ever answers badly leaves the honest stub, not a partial merge"
+  local root f fj; root=$(setup_env); mk_big_session "$root" big; f="$root/projects/proj-a/big.jsonl"
+  export TZ=UTC MOCK_MODE=chunked MOCK_BAD_CHUNK=2 MOCK_BAD_KIND=error AUTODREAM_SLIM_BYTES=2000 AUTODREAM_L1_CHUNK_BYTES=700 AUTODREAM_L1_ROUNDS=1
+  run_dream "$root"
+  unset TZ MOCK_MODE MOCK_BAD_CHUNK MOCK_BAD_KIND AUTODREAM_SLIM_BYTES AUTODREAM_L1_CHUNK_BYTES AUTODREAM_L1_ROUNDS
+  fj="$(fdir "$root")/$(hash_of "$f").json"
+  assert_grep "$fj" 'worker exited without findings JSON' "the final round writes the error stub"
+  assert_eq "$(jq -r 'has("meta") and (.meta | has("chunks"))' "$fj" 2>/dev/null)" "false" "and it is not a merge of the chunks that did answer"
+  rm -rf "$root"
+}
+test_chunk_cap_and_fallbacks(){
+  echo "# the chunk cap is loud, a cap of 1 still reads a bounded chunk, and a failed chunker never means an uncapped read"
+  local root f calls tl fj size
+  # cap of 2 on a session needing more
+  root=$(setup_env); mk_big_session "$root" big; f="$root/projects/proj-a/big.jsonl"
+  export TZ=UTC MOCK_MODE=chunked AUTODREAM_SLIM_BYTES=2000 AUTODREAM_L1_CHUNK_BYTES=700 AUTODREAM_L1_MAX_CHUNKS=2
+  run_dream "$root"
+  unset TZ MOCK_MODE AUTODREAM_SLIM_BYTES AUTODREAM_L1_CHUNK_BYTES AUTODREAM_L1_MAX_CHUNKS
+  fj="$(fdir "$root")/$(hash_of "$f").json"
+  assert_eq "$(jq -r .meta.chunks "$fj" 2>/dev/null)" "2" "cap 2: two chunks are read"
+  assert_eq "$(jq -r '(.meta.chunks_elided // 0) > 0' "$fj" 2>/dev/null)" "true" "cap 2: the omission is recorded in the findings"
+  assert_grep "$(fdir "$root")/run-stats.txt" 'l1_chunks_elided: 1' "cap 2: and counted in run-stats, so it cannot pass quietly"
+  rm -rf "$root"
+  # cap of 1: the one retained chunk is read, not the whole slim file
+  root=$(setup_env); mk_big_session "$root" big; f="$root/projects/proj-a/big.jsonl"; tl="$root/transcripts.log"
+  export TZ=UTC MOCK_MODE=chunked MOCK_TRANSCRIPT_LOG="$tl" AUTODREAM_SLIM_BYTES=2000 AUTODREAM_L1_CHUNK_BYTES=700 AUTODREAM_L1_MAX_CHUNKS=1
+  run_dream "$root"
+  unset TZ MOCK_MODE MOCK_TRANSCRIPT_LOG AUTODREAM_SLIM_BYTES AUTODREAM_L1_CHUNK_BYTES AUTODREAM_L1_MAX_CHUNKS
+  fj="$(fdir "$root")/$(hash_of "$f").json"
+  assert_eq "$(wc -l < "$tl" | tr -d ' ')" "1" "cap 1: one worker call"
+  assert_grep "$tl" 'chunk-01.jsonl' "cap 1: it was handed the retained chunk, not the whole slim"
+  assert_eq "$(jq -r '(.meta.chunks_elided // 0) > 0' "$fj" 2>/dev/null)" "true" "cap 1: the omission is recorded"
+  rm -rf "$root"
+  # an invalid cap falls back to the default instead of disabling chunking
+  root=$(setup_env); mk_big_session "$root" big; f="$root/projects/proj-a/big.jsonl"
+  export TZ=UTC MOCK_MODE=chunked AUTODREAM_SLIM_BYTES=2000 AUTODREAM_L1_CHUNK_BYTES=700 AUTODREAM_L1_MAX_CHUNKS=abc
+  run_dream "$root"
+  unset TZ MOCK_MODE AUTODREAM_SLIM_BYTES AUTODREAM_L1_CHUNK_BYTES AUTODREAM_L1_MAX_CHUNKS
+  fj="$(fdir "$root")/$(hash_of "$f").json"
+  assert_eq "$(jq -r '(.meta.chunks // 0) > 1' "$fj" 2>/dev/null)" "true" "a non-numeric cap uses the default and the session is still chunked"
+  rm -rf "$root"
+  # a cap written with a leading zero is decimal, not an invalid octal that silently disables chunking
+  root=$(setup_env); mk_big_session "$root" big; f="$root/projects/proj-a/big.jsonl"
+  export TZ=UTC MOCK_MODE=chunked AUTODREAM_SLIM_BYTES=2000 AUTODREAM_L1_CHUNK_BYTES=700 AUTODREAM_L1_MAX_CHUNKS=08
+  run_dream "$root"
+  unset TZ MOCK_MODE AUTODREAM_SLIM_BYTES AUTODREAM_L1_CHUNK_BYTES AUTODREAM_L1_MAX_CHUNKS
+  fj="$(fdir "$root")/$(hash_of "$f").json"
+  assert_eq "$(jq -r '(.meta.chunks // 0) > 1' "$fj" 2>/dev/null)" "true" "a cap of 08 is read as 8 and the session is chunked"
+  rm -rf "$root"
+  # the chunker cannot run (its scratch path is a file): the worker gets the CAPPED head/tail slim
+  root=$(setup_env); mk_big_session "$root" big; f="$root/projects/proj-a/big.jsonl"; tl="$root/transcripts.log"
+  mkdir -p "$(fdir "$root")"; : > "$(fdir "$root")/.chunks"
+  export TZ=UTC MOCK_MODE=chunked MOCK_TRANSCRIPT_LOG="$tl" AUTODREAM_SLIM_BYTES=2000 AUTODREAM_L1_CHUNK_BYTES=700 AUTODREAM_SLIM_HEAD=5 AUTODREAM_SLIM_TAIL=5
+  run_dream "$root"
+  unset TZ MOCK_MODE MOCK_TRANSCRIPT_LOG AUTODREAM_SLIM_BYTES AUTODREAM_L1_CHUNK_BYTES AUTODREAM_SLIM_HEAD AUTODREAM_SLIM_TAIL
+  size=$(cut -f2 "$tl" 2>/dev/null | head -1); case "$size" in ''|*[!0-9]*) size=999999 ;; esac
+  assert_eq "$(wc -l < "$tl" | tr -d ' ')" "1" "chunker failure: still exactly one worker call"
+  [ "$size" -lt 2500 ] && ok "chunker failure: the worker read the capped head/tail slim ($size bytes), not the whole FULL slim (~4 KB)" \
+                       || no "chunker failure: the worker read the capped head/tail slim (read $size bytes)"
+  rm -rf "$root"
+}
+test_escalation_skips_noise_gated_sessions(){
+  echo "# escalation slots are not spent on sessions the noise gate then skips"
+  local root gated f
+  root=$(setup_env)
+  mk_friction_session "$root" hot 10 0     # a real session: 2 user turns, score 10
+  # one user turn and 3 tool calls, all permission denials: score 3 + 9 = 12, but the noise
+  # gate skips it (under 2 user turns and under 5 tool calls). It must not take the slot.
+  gated="$root/projects/proj-a/gated.jsonl"
+  printf '%s\n' '{"type":"user","timestamp":"2020-01-02T12:00:00Z","message":{"content":"one prompt only"}}' > "$gated"
+  for i in 1 2 3; do
+    printf '{"type":"assistant","timestamp":"2020-01-02T12:01:%02dZ","message":{"content":[{"type":"tool_use","id":"g%d","name":"Bash","input":{"command":"x"}}]}}\n' "$i" "$i" >> "$gated"
+    printf '{"type":"user","timestamp":"2020-01-02T12:02:%02dZ","message":{"content":[{"type":"tool_result","tool_use_id":"g%d","is_error":true,"content":"Permission to use Bash has been denied."}]}}\n' "$i" "$i" >> "$gated"
+  done
+  touch -t "$STAMP" "$gated"
+  export TZ=UTC MOCK_MODEL_LOG="$root/models.log" AUTODREAM_L1_ESCALATE_MAX=1
+  run_dream "$root"
+  unset TZ MOCK_MODEL_LOG AUTODREAM_L1_ESCALATE_MAX
+  assert_eq "$(model_for "$root" hot)" "claude-opus-5-5" "the real session gets the single slot"
+  assert_grep "$(fdir "$root")/run-stats.txt" 'l1_escalated: 1' "and only it is counted"
+  rm -rf "$root"
+  root=$(setup_env); mk_session "$root" quiet
+  gated="$root/projects/proj-a/gated.jsonl"
+  printf '%s\n' '{"type":"user","timestamp":"2020-01-02T12:00:00Z","message":{"content":"one prompt only"}}' > "$gated"; touch -t "$STAMP" "$gated"
+  export TZ=UTC MOCK_MODEL_LOG="$root/models.log" AUTODREAM_L1_ESCALATE=all
+  run_dream "$root"
+  unset TZ MOCK_MODEL_LOG AUTODREAM_L1_ESCALATE
+  assert_grep "$(fdir "$root")/run-stats.txt" 'l1_escalated: 1' "all mode counts only the session that will actually be called, not the gated one"
+  rm -rf "$root"
+}
+test_noclock_file_modified_after_the_day_is_not_retriaged(){
+  echo "# a file with no timestamps is triaged on its own day only"
+  local root nc; root=$(setup_env)
+  mk_session "$root" noclock-later          # no timestamps; mtime moved to the day AFTER the report day
+  nc="$root/projects/proj-a/noclock-later.jsonl"; touch -t 202001041200 "$nc"
+  mk_session "$root" noclock-today          # no timestamps; mtime inside the report day
+  export TZ=UTC
+  run_dream "$root"
+  unset TZ
+  assert_file    "$(fdir "$root")/$(hash_of "$root/projects/proj-a/noclock-today.jsonl").json" "the no-clock file modified inside the day is triaged"
+  assert_no_file "$(fdir "$root")/$(hash_of "$nc").json" "the no-clock file modified after the day is not (it belongs to a later date)"
+  assert_grep    "$(fdir "$root")/run-stats.txt" 'sessions_out_of_window: 1' "and the skip is counted"
+  rm -rf "$root"
+}
+test_escalated_call_does_not_inherit_the_base_effort(){
+  echo "# an escalated call runs the escalation model at its own default effort, never the base effort"
+  local root cap
+  root=$(setup_env); mk_friction_session "$root" hot 10 0; cap="$root/cap"; mkdir -p "$cap"
+  export TZ=UTC MOCK_CAPTURE_DIR="$cap" AUTODREAM_L1_MODEL=claude-sonnet-5-5 AUTODREAM_L1_EFFORT=high
+  run_dream "$root"
+  unset TZ MOCK_CAPTURE_DIR AUTODREAM_L1_MODEL AUTODREAM_L1_EFFORT
+  assert_grep   "$cap/l1-args.txt" '^claude-opus-5-5$' "the escalated session runs the escalation model"
+  assert_nogrep "$cap/l1-args.txt" '^--effort$' "and carries no --effort from the base configuration"
+  rm -rf "$root"
+  root=$(setup_env); mk_session "$root" quiet; cap="$root/cap"; mkdir -p "$cap"
+  export TZ=UTC MOCK_CAPTURE_DIR="$cap" AUTODREAM_L1_MODEL=claude-sonnet-5-5 AUTODREAM_L1_EFFORT=high
+  run_dream "$root"
+  unset TZ MOCK_CAPTURE_DIR AUTODREAM_L1_MODEL AUTODREAM_L1_EFFORT
+  assert_grep   "$cap/l1-args.txt" '^--effort$' "control: a non-escalated session still gets the base effort"
+  rm -rf "$root"
+}
+test_triage_prompt_says_cut_lines_are_not_malformed(){
+  echo "# every session, chunked or not, is told that a cut line is not malformed input"
+  # Full-mode slim output carries no footer, and an unchunked session gets no chunk note, so the
+  # triage prompt is the one place that reaches both. Without it a worker may emit the error object
+  # it is told to write for malformed JSONL, and an unchunked session accepts that as its findings.
+  assert_grep "$REPO/prompts/SESSION_TRIAGE.md" 'a cut line is not malformed input' "SESSION_TRIAGE.md says a cut line is not malformed input"
+}
+test_chunking_off_restores_head_tail(){
+  echo "# AUTODREAM_L1_CHUNK_BYTES=0 is the documented rollback: head/tail elision, no chunk note, no chunk meta"
+  local root f tl cap fj size
+  root=$(setup_env); mk_big_session "$root" big; f="$root/projects/proj-a/big.jsonl"; tl="$root/transcripts.log"; cap="$root/cap"; mkdir -p "$cap"
+  export TZ=UTC MOCK_MODE=chunked MOCK_TRANSCRIPT_LOG="$tl" MOCK_CAPTURE_DIR="$cap" AUTODREAM_SLIM_BYTES=2000 AUTODREAM_L1_CHUNK_BYTES=0 AUTODREAM_SLIM_HEAD=5 AUTODREAM_SLIM_TAIL=5
+  run_dream "$root"
+  unset TZ MOCK_MODE MOCK_TRANSCRIPT_LOG MOCK_CAPTURE_DIR AUTODREAM_SLIM_BYTES AUTODREAM_L1_CHUNK_BYTES AUTODREAM_SLIM_HEAD AUTODREAM_SLIM_TAIL
+  fj="$(fdir "$root")/$(hash_of "$f").json"
+  size=$(cut -f2 "$tl" 2>/dev/null | head -1); case "$size" in ''|*[!0-9]*) size=999999 ;; esac
+  assert_eq "$(wc -l < "$tl" | tr -d ' ')" "1" "one worker call"
+  [ "$size" -lt 2500 ] && ok "the worker read the elided head/tail slim ($size bytes)" || no "the worker read the elided head/tail slim (read $size bytes)"
+  assert_nogrep "$cap/l1-stdin.txt" 'of ONE session' "no chunk note"
+  assert_eq "$(jq -r 'has("meta")' "$fj" 2>/dev/null)" "false" "no chunk meta in the findings"
+  rm -rf "$root"
+}
+
 echo "cc-autodream integration tests (mock claude)"
 echo
 test_happy
 test_session_stats
+test_session_stats_window
+test_session_stats_friction
+test_escalation_friction
+test_escalation_off_and_all
+test_escalation_cap_and_overrides
+test_day_window
+test_chunked_session
+test_chunk_retry_reuses_finished_chunks
+test_chunk_failure_never_publishes_a_partial_session
+test_small_session_is_not_chunked
+test_chunk_bad_answers_are_retried
+test_chunk_bad_answer_on_the_last_round_is_a_stub
+test_chunk_cap_and_fallbacks
+test_chunking_off_restores_head_tail
+test_triage_prompt_says_cut_lines_are_not_malformed
+test_escalation_skips_noise_gated_sessions
+test_noclock_file_modified_after_the_day_is_not_retriaged
+test_escalated_call_does_not_inherit_the_base_effort
 test_unreadable
 test_incomplete
 test_idempotent
@@ -2066,6 +2506,9 @@ test_install_deploys_the_adapter_runtime(){
   assert_file "$target/lib-project.sh" "lib-project.sh is installed"
   assert_file "$target/adapters.sh"    "adapters.sh is installed"
   assert_file "$target/preflight.sh"   "preflight.sh is installed"
+  assert_file "$target/session-window.sh" "session-window.sh is installed"
+  assert_file "$target/chunk-transcript.sh" "chunk-transcript.sh is installed"
+  assert_file "$target/merge-chunks.sh" "merge-chunks.sh is installed"
   [ -e "$target/adapters/claude/adapter.sh" ] \
     && ok "the adapters tree is reachable from the install target" \
     || no "the adapters tree is reachable from the install target"
@@ -2469,6 +2912,8 @@ test_upgrade_lag_install_still_produces_a_report(){
   # run.sh as a symlink into the repo. Deliberately NOT lib-project.sh,
   # adapters.sh, preflight.sh or adapters/.
   local h
+  # NOT session-window.sh / chunk-transcript.sh / merge-chunks.sh: a pre-feature install does not have them,
+  # and the point of this fixture is the run that happens before install.sh links them (L1_COVERAGE=0).
   for h in prune-self-sessions.sh root-probe.sh slim-transcript.sh session-stats.sh \
            overlap-stats.sh vault-notes.sh x-bookmarks.sh notify.sh; do
     [ -f "$REPO/bin/$h" ] && ln -s "$REPO/bin/$h" "$T/autodream/$h"
@@ -2888,7 +3333,7 @@ test_all_excluded_corpus_says_so
 # Their counts fold into the totals below, so a red unit suite fails this script.
 echo
 echo "===== unit suites ====="
-for _suite in lib-project preflight adapters adapter-claude adapter-contract slim-transcript promote; do
+for _suite in lib-project preflight adapters adapter-claude adapter-contract slim-transcript session-window chunk-transcript merge-chunks promote; do
   _out=$(bash "$HERE/$_suite.sh" 2>&1)
   _rc=$?
   _p=$(printf '%s\n' "$_out" | sed -n 's/^passed: *\([0-9][0-9]*\).*/\1/p' | tail -1)

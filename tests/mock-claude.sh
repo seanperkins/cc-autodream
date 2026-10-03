@@ -21,6 +21,13 @@
 #   MOCK_CANDIDATE_CWD       cwd proposed by the candidate mock.
 #   MOCK_CAPTURE_DIR=<dir>   dump each layer's stdin + argv to <dir>/l{1,2}-*.txt
 #                            so tests can assert on the exact prompt framing.
+#   MOCK_MODE=chunked        L1 answers as one chunk of a longer session (goal-N, outcome
+#                            fully_achieved only on the last chunk). MOCK_FAIL_CHUNK=N
+#                            makes chunk N produce nothing on its first attempt.
+#   MOCK_MODEL_LOG=<file>    append "<output path><TAB><model>" for every L1 call.
+#   MOCK_BAD_CHUNK=N         chunked mode: chunk N answers with the wrong thing once.
+#   MOCK_BAD_KIND=error|nofindings|typed   what that wrong answer is (default error).
+#   MOCK_TRANSCRIPT_LOG=<file>  append "<transcript path><TAB><its bytes>" per L1 call.
 #   MOCK_CALL_LOG=<file>     append the L1 output path for every invocation of
 #                            this mock, one per line — lets a test prove the
 #                            model was (or was not) invoked for a given session
@@ -41,6 +48,26 @@ if printf '%s' "$line1" | grep -q '^Session transcript'; then
   out=$(printf '%s' "$line2" | sed 's/^Write your findings JSON to this literal absolute path: //')
   sess=$(printf '%s' "$line1" | sed 's/^Session transcript to analyze (literal absolute path): //')
   [ -n "${MOCK_CALL_LOG:-}" ] && printf '%s\n' "$out" >> "$MOCK_CALL_LOG"
+  # How big a transcript the worker was actually handed (a slim file that exists only
+  # for the duration of the call), so a test can prove what the worker was given.
+  [ -n "${MOCK_TRANSCRIPT_LOG:-}" ] && printf '%s\t%s\n' "$sess" "$(wc -c < "$sess" 2>/dev/null | tr -d ' ')" >> "$MOCK_TRANSCRIPT_LOG"
+  # The model this call asked for, so a test can prove WHICH model a session got.
+  if [ -n "${MOCK_MODEL_LOG:-}" ]; then
+    _m=""; _prev=""
+    for _a in "$@"; do [ "$_prev" = "--model" ] && _m="$_a"; _prev="$_a"; done
+    printf '%s\t%s\n' "$out" "$_m" >> "$MOCK_MODEL_LOG"
+  fi
+  # chunked mode: answer as one chunk of a longer session, so the merge has something
+  # to disagree about. Chunk i of n comes from the chunk note in the prompt.
+  write_chunked() { # $1=i $2=n
+    local oc=partially_achieved; [ "$1" = "$2" ] && oc=fully_achieved
+    jq -cn --arg sess "$sess" --arg i "$1" --arg oc "$oc" \
+      '{session_path:$sess, project:"proj-a", turn_count:30, tool_call_count:0, tools_used:[], skills_invoked:[],
+        models_used:[], notable_initiatives:[("init-"+$i)], underlying_goal:("goal-"+$i), outcome:$oc,
+        satisfaction_signals:{happy:0,satisfied:0,dissatisfied:0,frustrated:0}, instructions_given:[],
+        findings:[{category:"permission_prompt",severity:"low",what:("finding-from-chunk-"+$i),evidence_excerpt:"x",proposed_rule:"y"},
+                  {category:"other",severity:"low",what:"shared across chunks",evidence_excerpt:"x",proposed_rule:"y"}]}' > "$out"
+  }
   write_findings() { printf '{"session_path":"x","project":"proj-a","turn_count":2,"tool_call_count":0,"tools_used":[],"skills_invoked":[],"models_used":[],"notable_initiatives":[],"underlying_goal":null,"outcome":"fully_achieved","satisfaction_signals":{"happy":0,"satisfied":1,"dissatisfied":0,"frustrated":0},"instructions_given":["always run tests after edits"],"findings":[]}' > "$out"; }
   # Emit a real session_path but a deliberately WRONG project (what nondeterministic
   # haiku does), so run.sh's path-based normalization pass has something to correct.
@@ -55,6 +82,23 @@ if printf '%s' "$line1" | grep -q '^Session transcript'; then
       fi ;;
     l1_flaky)                           # fail the first dispatch per session, succeed on retry
       if [ -f "$out.attempt" ]; then write_findings; else : > "$out.attempt"; fi ;;
+    chunked)                            # answer per chunk; MOCK_FAIL_CHUNK=N fails chunk N once
+      ci=""; cn=""
+      read -r ci cn <<< "$(printf '%s' "$input" | sed -n 's/.*chunk \([0-9][0-9]*\) of \([0-9][0-9]*\) of ONE session.*/\1 \2/p' | head -1)"
+      [ -n "$ci" ] || { ci=1; cn=1; }
+      if [ "$ci" = "${MOCK_FAIL_CHUNK:-0}" ] && [ ! -f "$out.attempt" ]; then
+        : > "$out.attempt"
+      elif [ "$ci" = "${MOCK_BAD_CHUNK:-0}" ] && [ ! -f "$out.bad" ]; then
+        # a worker that answers, but with the wrong thing, once; the retry answers properly
+        : > "$out.bad"
+        case "${MOCK_BAD_KIND:-error}" in
+          error)      printf '{"session_path":"%s","error":"unreadable","findings":[]}' "$sess" > "$out" ;;
+          nofindings) printf '{"foo":1}' > "$out" ;;
+          typed)      printf '{"session_path":"%s","findings":"oops"}' "$sess" > "$out" ;;
+        esac
+      else
+        write_chunked "$ci" "$cn"
+      fi ;;
     *) write_findings ;;
   esac
   echo done

@@ -16,7 +16,19 @@
 # Tunables (env): AUTODREAM_SLIM_MAXLINE (400 chars), _HEAD (400 lines),
 #                 _TAIL (200 lines), _CAP (262144 bytes),
 #                 _TOOLRESULT (600 chars), _THINKING (800 chars).
+#                 AUTODREAM_SLIM_FULL=1 keeps every line and ignores _HEAD/_TAIL/_CAP.
 set -u
+
+# Everything this script writes is derived from a session transcript (mode 0600) and the
+# day slice is the UNSTRIPPED record stream, so none of it may be readable by another local
+# account whatever umask the caller has. The temp files are removed on every exit path,
+# including a signal, so an interrupted run does not leave a raw copy at a predictable path.
+umask 077
+win_tmp=""
+pre_tmp=""
+cleanup_tmp() { [ -n "$win_tmp" ] && rm -f "$win_tmp"; [ -n "$pre_tmp" ] && rm -f "$pre_tmp"; return 0; }
+trap cleanup_tmp EXIT
+trap 'exit 130' INT TERM HUP
 
 src="${1:?usage: slim-transcript.sh <src> <dst>}"
 dst="${2:?usage: slim-transcript.sh <src> <dst>}"
@@ -24,13 +36,49 @@ maxline="${AUTODREAM_SLIM_MAXLINE:-400}"
 headn="${AUTODREAM_SLIM_HEAD:-400}"
 tailn="${AUTODREAM_SLIM_TAIL:-200}"
 cap="${AUTODREAM_SLIM_CAP:-262144}"
+case "$cap" in ""|*[!0-9]*) cap=262144 ;; esac   # a non-numeric cap made head -c fail and left only the footer
 trmax="${AUTODREAM_SLIM_TOOLRESULT:-600}"
 tkmax="${AUTODREAM_SLIM_THINKING:-800}"
 
 [ -r "$src" ] || { echo "slim-transcript: cannot read $src" >&2; exit 1; }
 
+# `>` onto a file that already exists keeps THAT file mode, so a 0644 leftover from an older run
+# at one of these predictable paths would stay world-readable while the unstripped slice was
+# written into it. The scratch files are this script own, so they are removed first. The
+# destination is NOT removed (a caller such as the claude adapter reserves it with mktemp and
+# hands it in; deleting it would drop that reservation); an existing one is made private instead.
+# Scratch names carry the PID, so they can never collide with the input or with a stale file; the
+# legacy fixed names are still removed (never when one of them is the input itself).
+[ "$src" = "$dst.win.jsonl" ] || rm -f "$dst.win.jsonl"
+[ "$src" = "$dst.pre.jsonl" ] || rm -f "$dst.pre.jsonl"
+[ -f "$dst" ] && chmod 600 "$dst" 2>/dev/null
+
 lines=$(wc -l < "$src" | tr -d ' ')
 bytes=$(wc -c < "$src" | tr -d ' ')
+
+# Report-day window (run.sh exports the bounds). A multi-day orchestrator is one
+# file, so without the slice the worker would read every day of it on every night
+# it is triaged. The slice runs FIRST because it needs each record's ORIGINAL
+# timestamp. An empty slice means the file has no records the window can place
+# (enumeration already refused any file that HAS timestamps and none in the day),
+# so the whole transcript is used, as a transcript with no clock always was.
+work_src="$src"
+win_tmp=""
+if [ -n "${AUTODREAM_WINDOW_START_EPOCH:-}" ] && [ -n "${AUTODREAM_WINDOW_END_EPOCH:-}" ]; then
+  swin="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/session-window.sh"
+  if [ -x "$swin" ]; then
+    win_tmp="$dst.win.$$.jsonl"
+    if "$swin" slice "$src" "$AUTODREAM_WINDOW_START_EPOCH" "$AUTODREAM_WINDOW_END_EPOCH" > "$win_tmp" 2>/dev/null && [ -s "$win_tmp" ]; then
+      work_src="$win_tmp"
+      lines=$(wc -l < "$work_src" | tr -d ' ')
+    else
+      rm -f "$win_tmp"; win_tmp=""
+      echo "slim-transcript: window slice was empty or failed; using the whole transcript" >&2
+    fi
+  else
+    echo "slim-transcript: session-window.sh not found beside this script; not slicing" >&2
+  fi
+fi
 
 # Pre-pass: when jq is available, strip the bulky payloads that tool calls leave
 # behind, before the line-based head/tail/truncate pass. Two transcript schemas
@@ -48,10 +96,10 @@ bytes=$(wc -c < "$src" | tr -d ' ')
 # no payload and no goal, and returns no findings. Both schemas are stripped here.
 # The line-based pass still runs as a safety net for stragglers. Falls back
 # transparently if jq isn't installed or the stream isn't parseable JSONL.
-pre_src="$src"
+pre_src="$work_src"
 pre_tmp=""
 if command -v jq >/dev/null 2>&1; then
-  pre_tmp="$dst.pre.jsonl"
+  pre_tmp="$dst.pre.$$.jsonl"
   if jq -c --argjson tr "$trmax" --argjson tk "$tkmax" '
     # tostring is applied ONLY when the value is over the cap, and never to null.
     # The first version ran it unconditionally, which did three wrong things: a
@@ -76,6 +124,47 @@ if command -v jq >/dev/null 2>&1; then
         (tostring as $s
          | if ($s | length) > $n then $s[0:$n] + "…[autodream: truncated]" else . end)
       end;
+    # CLAUDE CODE BOOKKEEPING AND REPLAY NOISE (measured 2026-10-02 on a 3,479-line
+    # session: 36% conversation, 24% hook and reminder attachments, 21% mode,
+    # permission-mode, last-prompt and bridge-session records). The head/tail pass
+    # is positional, so on the raw stream it spent its whole budget on these and the
+    # worker saw about 2% of the conversation. Dropped by an explicit DENYLIST of
+    # Claude Code types and never an allowlist of user/assistant: OMP transcripts
+    # come through here too, and an allowlist would delete every one of their records.
+    # Kept on purpose: attachment/queued_command (the user typing mid-turn, the only
+    # place that text lives), attachment/skill_listing (SESSION_TRIAGE.md names it twice:
+    # the StructuredOutput HARD RULE and the missed_skill category), system records other
+    # than stop_hook_summary and turn_duration (compact_boundary is the compaction marker
+    # drift_after_compaction needs), pr-link and summary records.
+    def noise:
+      (.type | IN("bridge-session", "last-prompt", "permission-mode", "mode", "atis-latch",
+                  "ai-title", "queue-operation", "file-history-snapshot",
+                  "file-history-delta", "dev-mods"))
+      or (.type == "attachment" and (.attachment.type | IN("queued_command", "skill_listing") | not))
+      or (.type == "system" and (.subtype | IN("stop_hook_summary", "turn_duration")));
+    def claude_type: .type | IN("user", "assistant", "attachment", "system");
+    # RESHAPE. Claude Code writes message before timestamp, so the 400-char line cut
+    # dropped the timestamp from a third of the lines, and the envelope (parentUuid,
+    # uuid, cwd, sessionId, version, gitBranch, userType, toolUseResult, and the
+    # message id/model/usage) used about 185 chars before the content began. Build the
+    # record with type then timestamp FIRST and only the fields triage reads. A key is
+    # added only when the source has it, because inventing a null is the exact bug the
+    # guards elsewhere in this program exist to stop. The thinking signature is a
+    # base64 blob that filled whole lines on its own.
+    def reshape:
+      if claude_type then
+        ({type: .type}
+         + (if has("timestamp") then {timestamp: .timestamp} else {} end)
+         + with_entries(select(.key | IN("isSidechain", "isMeta", "isCompactSummary",
+                                         "subtype", "level", "content", "message", "attachment"))))
+        | (if (.message | type) == "object"
+             then .message |= with_entries(select(.key | IN("role", "content")))
+             else . end)
+        | (if (.message.content | type) == "array"
+             then .message.content |= map(if .type == "thinking" then del(.signature) else . end)
+             else . end)
+      else . end;
+    select(noise | not) | reshape |
     if (.message | type) == "object" then
       .message |= (
         # Raw provider round-trip, never useful for triage.
@@ -142,7 +231,7 @@ if command -v jq >/dev/null 2>&1; then
            else . end)
       )
     else . end
-  ' "$src" > "$pre_tmp" 2>/dev/null && [ -s "$pre_tmp" ]; then
+  ' "$work_src" > "$pre_tmp" 2>/dev/null && [ -s "$pre_tmp" ]; then
     pre_src="$pre_tmp"
     # Re-measure: head/tail/cap math below should reflect post-strip size.
     lines=$(wc -l < "$pre_src" | tr -d ' ')
@@ -151,17 +240,26 @@ if command -v jq >/dev/null 2>&1; then
   fi
 fi
 
+# AUTODREAM_SLIM_FULL=1 is for the chunker: keep every surviving line and apply no
+# byte cap, because the chunker does its own sizing at line boundaries. Without it
+# the default is unchanged, except that head and tail now count lines left AFTER the
+# pre-pass dropped the noise records, so the budget lands on conversation.
+full="${AUTODREAM_SLIM_FULL:-0}"
 {
-  if [ "$lines" -le $((headn + tailn)) ]; then
+  if [ "$full" = "1" ] || [ "$lines" -le $((headn + tailn)) ]; then
     cut -c1-"$maxline" "$pre_src"
   else
     head -n "$headn" "$pre_src" | cut -c1-"$maxline"
     printf '...[%d of %d lines elided by autodream for size]...\n' $((lines - headn - tailn)) "$lines"
     tail -n "$tailn" "$pre_src" | cut -c1-"$maxline"
   fi
-} | head -c "$cap" > "$dst"
+} | { if [ "$full" = "1" ]; then cat; else head -c "$cap"; fi; } > "$dst"
 
 [ -n "$pre_tmp" ] && rm -f "$pre_tmp"
+[ -n "$win_tmp" ] && rm -f "$win_tmp"
 
-printf '\n...[autodream slimmed this transcript: original %s bytes / %s lines; lines truncated to %s chars]...\n' \
+# The footer is plain text. In full mode the output is cut into chunks, so it would land in the last
+# chunk as a non-JSON line the worker reads as transcript content; the chunk note and the triage
+# prompt already say that long lines are cut, so full mode appends none.
+[ "$full" = "1" ] || printf '\n...[autodream slimmed this transcript: original %s bytes / %s lines; lines truncated to %s chars]...\n' \
   "$bytes" "$lines" "$maxline" >> "$dst"

@@ -213,6 +213,23 @@ the report can flag releases that change how you work.
 
 To compare models for L1 before changing `AUTODREAM_L1_MODEL`, see [`bench/README.md`](bench/README.md).
 
+**What the per-session pass actually reads.** Long sessions are not summarised from their
+head and tail. Bookkeeping and hook records are dropped, every conversation line is kept,
+and a transcript too big for one worker is split at line boundaries and triaged one chunk
+per worker, then merged mechanically into the one findings JSON per session. A session is
+selected by what is *in* it for the report day (a multi-day orchestrator is reviewed one day
+at a time), not by file mtime. Sessions with measured friction (`is_error` tool results,
+permission denials) go to a stronger model. Knobs, all optional:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `AUTODREAM_L1_CHUNK_BYTES` | `300000` | Chunk size for one L1 worker. `0` turns chunking off and restores head/tail elision. |
+| `AUTODREAM_L1_MAX_CHUNKS` | `8` | Over this the middle chunks are dropped; recorded in `meta.chunks_elided` and counted as `l1_chunks_elided` in run-stats. |
+| `AUTODREAM_L1_ESCALATE` | `friction` | `off`, `friction` or `all`. |
+| `AUTODREAM_L1_ESCALATE_MIN` | `8` | Friction score bar: `error_result_count + 3 * permission_denial_count`. |
+| `AUTODREAM_L1_ESCALATE_MAX` | `6` | Sessions per run sent to the escalation model, hottest first. Cost ceiling is this times `AUTODREAM_L1_MAX_CHUNKS` calls (6 x 8 = 48 by default). |
+| `AUTODREAM_L1_ESCALATE_MODEL` | `claude-opus-5-5` | Model for an escalated session. Cost is per chunk. |
+
 Everything lives on disk (findings JSON, the report, run logs, stats) and every step
 is idempotent, so you can rerun any date. Configuration knobs are documented in
 `bin/run.sh`'s header.

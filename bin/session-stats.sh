@@ -24,15 +24,40 @@ mtime=$(stat -f %m "$transcript" 2>/dev/null) || {
 
 mkdir -p "$(dirname "$output")" || exit 1
 
+# Report-day window, exported by run.sh. When set, every count below is taken over
+# that day's slice, so the sidecar L1 is told to copy verbatim describes the same
+# records L1 is shown, and the noise gate judges the slice and not the whole file.
+# transcript_bytes stays the RAW file size: the oversized gate keys on it.
+win_start="${AUTODREAM_WINDOW_START_EPOCH:-}"; win_end="${AUTODREAM_WINDOW_END_EPOCH:-}"
+case "${win_start}${win_end}" in *[!0-9]*) win_start=""; win_end="" ;; esac
+[ -n "$win_start" ] && [ -n "$win_end" ] || { win_start=null; win_end=null; }
+
 jq -R -s \
   --argjson transcript_bytes "${bytes:-0}" \
   --argjson transcript_mtime "${mtime:-0}" \
+  --argjson win_start "$win_start" \
+  --argjson win_end "$win_end" \
   '
+  def ts: (try .timestamp catch null)
+    | select(type == "string")
+    | try (sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) catch empty;
+  # The text of a tool_result: a plain string, or the text blocks of an array.
+  def result_text:
+    if (.content | type) == "string" then .content
+    elif (.content | type) == "array" then ([.content[]? | select(type == "object") | (.text? // empty)] | join(" "))
+    else "" end;
   [
     split("\n")[]
     | fromjson?
     | select(type == "object")
   ] as $lines
+  | (if $win_start == null then []
+     else [$lines[] | select(ts | . >= $win_start and . < $win_end)] end) as $slice
+  # An empty slice is a transcript the window cannot place (no clock at all; the
+  # enumeration gate lets those through), so it is measured whole, exactly as the
+  # slimmer shows it whole. Slicing it to nothing would zero the stats of a session
+  # that L1 is still asked to triage.
+  | (if ($slice | length) > 0 then $slice else $lines end) as $lines
   | [
       $lines[]
       | select(.type == "user" and .isMeta != true)
@@ -80,6 +105,17 @@ jq -R -s \
       | .message.model
       | select(type == "string" and length > 0 and . != "<synthetic>")
     ] as $models
+  # Friction, counted from the structure and never grepped from the transcript: only
+  # tool_result blocks the harness marked is_error:true, so prose, the system prompt and
+  # successful results that happen to say "permission" can never inflate it.
+  | [
+      $lines[]
+      | select(.type == "user")
+      | .message.content?
+      | select(type == "array")
+      | .[]
+      | select(type == "object" and .type == "tool_result" and .is_error == true)
+    ] as $error_results
   | [
       $lines[]
       | select(has("timestamp"))
@@ -101,6 +137,11 @@ jq -R -s \
       user_message_count: ($user_messages | length),
       turn_count: ($turns | length),
       tool_call_count: ($tool_uses | length),
+      error_result_count: ($error_results | length),
+      # A denial is the harness own wording (sampled from real transcripts), not any text that
+      # mentions permission: EACCES, git "Permission denied (publickey)" and unrelated tool
+      # errors that merely contain the word were scoring at weight 3 each.
+      permission_denial_count: ([$error_results[] | select(result_text | test("permission (for this [a-z]+|to use [\\s\\S]{0,300}?) (was|has been) denied|denied by (the )?(claude code )?auto mode classifier|denied by (the |a )?built-in (claude code )?(safety )?check|auto mode classifier gave no verdict|not allowed in auto mode|requested permissions? to [\\s\\S]{0,300}?haven.t granted it"; "i"))] | length),
       tools_used: (
         $tool_uses
         | map(.name)
