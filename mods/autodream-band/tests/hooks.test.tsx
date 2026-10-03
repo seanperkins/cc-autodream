@@ -138,6 +138,20 @@ test('the band appears when last night\'s report has an open question', async ($
   expect(text).toContain('Editing files before reading them')
 })
 
+test('the band is one row: the summary truncates instead of wrapping around the buttons', async ($, on) => {
+  world(on, { '2026-10-01.md': BUSY.replace('Editing files before reading them', `${'A very long pattern title '.repeat(12)}`) })
+  await start($)
+
+  const ui = await band($)
+  const summary = await ui.find({ type: 'Text', text: /Autodream 2026-10-01/ })
+
+  expect(summary?.props?.wrap).toBe('truncate-end')
+  // the buttons are in the band row, not beneath the summary
+  expect(await ui.find({ key: 'triage' })).toBeDefined()
+  expect(await ui.find({ key: 'view' })).toBeDefined()
+  expect(await ui.find({ key: 'dismiss' })).toBeDefined()
+})
+
 test('a quiet report leaves the band to the engine', async ($, on) => {
   world(on, { '2026-10-01.md': QUIET })
   await start($)

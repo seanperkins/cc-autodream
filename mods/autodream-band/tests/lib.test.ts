@@ -173,6 +173,14 @@ describe('side-window triage', () => {
   })
 })
 
+describe('parseReport titles', () => {
+  test('drops Markdown backticks from a pattern title: they are noise in a one-line band', async () => {
+    const parsed = parseReport('# Autodream — 2026-10-02\n\n## Top patterns (ranked)\n\n### Sandbox blocks git checkouts and `gh` authentication\n- **Severity**: high\n')
+
+    expect(parsed?.patterns[0]?.title).toBe('Sandbox blocks git checkouts and gh authentication')
+  })
+})
+
 describe('latestReport', () => {
   test('picks the newest dated report and ignores everything else', async () => {
     expect(latestReport(['switchyard-dreamer.log', '2026-09-30.md', '2026-10-01.md', 'notes.md', '2026-10-01.md.bak'])).toBe('2026-10-01.md')

@@ -35,7 +35,8 @@ export const parseReport = (text: string): Parsed | null => {
   const patterns: DreamPattern[] = []
 
   for (const chunk of (section(text, /^## Top patterns/) ?? '').split(/^### /m).slice(1)) {
-    const title = chunk.split('\n')[0]?.trim() ?? ''
+    // Backticks are Markdown in the report and literal noise in a one-line band.
+    const title = (chunk.split('\n')[0]?.trim() ?? '').replace(/`/g, '')
     const severity = /\*\*Severity\*\*:\s*(\w+)/i.exec(chunk)?.[1]?.toLowerCase() ?? 'unknown'
 
     if (title !== '') patterns.push({ title, severity })

@@ -270,13 +270,18 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column">
         {beneath}
-        <Box key="band">
-          <Text dimColor>{`🌙 Autodream ${shown.date}: ${parts.join(' · ')} `}</Text>
-          {shown.openQuestions > 0 && (
-            <Button key="triage" label="Triage" variant="primary" onPress={async () => $.ui.toast(await triageBeside($, shown, false))} />
-          )}
-          <Button key="view" label="View" onPress={() => open($, shown)} />
-          <Button key="dismiss" label="Dismiss" dimColor onPress={() => dismiss($)} />
+        {/* One row: the summary takes what room the buttons leave and ends in an ellipsis rather than wrapping around them. */}
+        <Box key="band" gap={1}>
+          <Box flexGrow={1} flexShrink={1}>
+            <Text dimColor wrap="truncate-end">{`🌙 Autodream ${shown.date}: ${parts.join(' · ')}`}</Text>
+          </Box>
+          <Box flexShrink={0} gap={1}>
+            {shown.openQuestions > 0 && (
+              <Button key="triage" label="Triage" variant="primary" onPress={async () => $.ui.toast(await triageBeside($, shown, false))} />
+            )}
+            <Button key="view" label="View" onPress={() => open($, shown)} />
+            <Button key="dismiss" label="Dismiss" dimColor onPress={() => dismiss($)} />
+          </Box>
         </Box>
       </Box>
     )
