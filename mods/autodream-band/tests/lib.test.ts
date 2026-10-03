@@ -104,12 +104,10 @@ describe('triagePrompt', () => {
     expect(text).toContain('## Triage decisions')
   })
 
-  test('keeps review.sh\'s guardrail: global files need per-edit approval', async () => {
+  test('keeps review.sh\'s guardrails: global files need per-edit approval and memory goes through Mnemopi', async () => {
     expect(text).toContain('explicit per-edit approval')
-  })
-
-  test('says nothing about where memory goes: that is the installation\'s business, not the mod\'s', async () => {
-    expect(text).not.toMatch(/MEMORY\.md|Mnemopi|promote\.sh|apply-pins/)
+    expect(text).toContain('MEMORY.md')
+    expect(text).toContain('promote.sh')
   })
 })
 
@@ -220,12 +218,12 @@ describe('shouldShow', () => {
 })
 
 describe('keySections', () => {
-  test('keeps the patterns and questions, and drops the rest', async () => {
+  test('keeps the patterns, memory candidates and questions, and drops the rest', async () => {
     const text = keySections(REPORT, 10_000)
 
     expect(text).toContain('## Top patterns')
+    expect(text).toContain('## Memory candidates')
     expect(text).toContain('## Open questions')
-    expect(text).not.toContain('## Memory candidates')
     expect(text).not.toContain('Per-project notes')
   })
 

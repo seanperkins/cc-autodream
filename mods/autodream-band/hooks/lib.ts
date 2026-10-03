@@ -91,6 +91,7 @@ export const triagePrompt = (date: string, path: string): string =>
     '',
     'Rules:',
     '- Edits to ~/.claude/CLAUDE.md, ~/.claude/rules/*, ~/.claude/docs/guardrails/* and any other global file need my explicit per-edit approval.',
+    '- Never write MEMORY.md. Memory goes through Mnemopi via bin/promote.sh after triage.',
     '- Be terse: one question, one decision, one action, then the next.',
   ].join('\n')
 
@@ -136,7 +137,8 @@ export const cmuxTriage = (script: string, date: string, isForced: boolean) => (
   script,
 })
 
-const WANTED = ['Top patterns', 'Open questions']
+// This fork's Layer 2 also writes `## Memory candidates` (see bin/promote.sh), and the pane shows them.
+const WANTED = ['Top patterns', 'Memory candidates', 'Open questions']
 
 /** What the pane draws: the sections that ask something of you, within a Markdown element's limit. */
 export const keySections = (text: string, limit: number): string => {

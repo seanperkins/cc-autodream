@@ -298,6 +298,8 @@ It finds `review.sh`, the reports and cmux through the variables `review.sh` rea
 
 Its tests run under Claude Code, not in `tests/run-all.sh` and not in CI (`claude plugin validate mods/autodream-band`, `claude plugin test mods/autodream-band`; `tsc -p` needs the types Claude Code writes into the git-ignored `.claude-plugin/types/` when it loads the mod). `$.env.get` takes a literal variable name, so the variables a mod reads can be listed: a loop over names fails validation.
 
+**This fork carries two additions the upstream PR (STRML/cc-autodream#80) does not**, both in `mods/autodream-band/hooks/lib.ts` with their tests: `WANTED` includes `Memory candidates`, because this fork's L2 writes that section, and `triagePrompt` carries the "never write MEMORY.md; memory goes through Mnemopi via `bin/promote.sh`" rule. Upstream wrote neither (it has no such section and a different memory path), so they were left out of the PR. When the PR changes in review or merges, port the change here and keep these two lines.
+
 ## The sibling repo, and the fix that lands in only one of them
 
 This repo has a twin: **omp-autodream**, the OMP port. Both are checked out on this host
