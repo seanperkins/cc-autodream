@@ -233,8 +233,11 @@ FINDINGS_DIR="$AUTODREAM_DIR/findings/$TARGET_DATE"
 REPORT_PATH="$DREAMS_DIR/$TARGET_DATE.md"
 RUN_LOG="$LOG_DIR/run-$TARGET_DATE.log"
 SESSIONS_LIST="$FINDINGS_DIR/sessions.txt"
-ESCALATE_LIST="$FINDINGS_DIR/escalate.txt"   # hashes the L1 fan-out sends to the escalation model
+ESCALATE_LIST="$FINDINGS_DIR/escalate.txt"   # record of the hashes sent to the escalation model; workers never read it
 ESCALATED=0
+# The decision the workers act on. A worker holds the Write tool and could rewrite escalate.txt, so the
+# selection is snapshotted here before any model runs and travels in the environment, like the source map.
+AUTODREAM_ESCALATE_HASHES=""
 
 # Self-session prune helper — single source of truth for "is this autodream's own
 # transcript?". Resolve it next to this script first (works for the repo copy and the
@@ -2170,8 +2173,9 @@ l1_noise_gated() {
 
 select_escalations() {
   local mode="${AUTODREAM_L1_ESCALATE:-friction}" min="${AUTODREAM_L1_ESCALATE_MIN:-8}" max="${AUTODREAM_L1_ESCALATE_MAX:-6}"
-  local session hash stats src
+  local session hash stats src f
   ESCALATED=0
+  AUTODREAM_ESCALATE_HASHES=""
   : > "$ESCALATE_LIST" 2>/dev/null || { log "WARNING: cannot write $ESCALATE_LIST; escalation is OFF this run"; return 0; }
   case "$mode" in
     off) return 0 ;;
@@ -2185,6 +2189,11 @@ select_escalations() {
     hash=$(session_hash "$session") || continue
     src=$(awk -F'\t' -v h="$hash" '$1 == h { print $2; exit }' "$FINDINGS_DIR/sessions-source.txt" 2>/dev/null)
     [ "$src" = claude ] || continue
+    # A session with reusable findings is skipped by the dispatcher, so it must not take a slot or be
+    # counted. That includes findings reconcile_findings_with_worklist will move back from outside-worklist/.
+    for f in "$FINDINGS_DIR/$hash.json" "$FINDINGS_DIR/outside-worklist/$hash.json"; do
+      if [ -s "$f" ] && jq -e ".findings | arrays" "$f" >/dev/null 2>&1; then continue 2; fi
+    done
     stats="$FINDINGS_DIR/$hash.stats.json"
     # A session the noise gate will skip never reaches a model, so it must not take a slot
     # or be counted.
@@ -2201,6 +2210,7 @@ select_escalations() {
   fi
   rm -f "$ESCALATE_LIST.scores"
   ESCALATED=$(wc -l < "$ESCALATE_LIST" | tr -d ' ')
+  AUTODREAM_ESCALATE_HASHES=$(cat "$ESCALATE_LIST")
   log "escalation ($mode): $ESCALATED session(s) go to ${AUTODREAM_L1_ESCALATE_MODEL:-claude-opus-5-5}"
 }
 
@@ -2446,7 +2456,7 @@ dispatch_l1() { # one parallel pass; idempotent worker → only the still-missin
     # to the base model (Haiku rejects --effort outright), so an escalated call runs at the
     # escalation model default effort: the empty AUTODREAM_L1_EFFORT_CLAUDE below drops the flag.
     escenv=""
-    if [ "$src" = claude ] && [ -s "${ESCALATE_LIST:-/nonexistent}" ] && grep -qxF "$hash" "$ESCALATE_LIST"; then
+    if [ "$src" = claude ] && printf "%s\n" "${AUTODREAM_ESCALATE_HASHES:-}" | grep -qxF "$hash"; then
       model="${AUTODREAM_L1_ESCALATE_MODEL:-claude-opus-5-5}"
       escenv="AUTODREAM_L1_EFFORT_CLAUDE="
       echo "escalated: $session ($hash) -> $model" >&2
@@ -2716,9 +2726,11 @@ dispatch_l1() { # one parallel pass; idempotent worker → only the still-missin
       # copies from (merge-chunks.sh takes the stats fields from chunk 1). All of it is in the
       # cache name, so a retry after the prompt, the model or the session changed redoes the chunk
       # instead of merging a stale answer with fresh ones.
+      effv=""; prevarg=""
+      for arg in "${argv[@]}"; do [ "$prevarg" = "--effort" ] && effv="$arg"; prevarg="$arg"; done
       ccfg=$( { cat "$AUTODREAM_DIR/SESSION_TRIAGE.md" 2>/dev/null
                 if [ -n "$src" ] && [ -r "$ADAPTERS_DIR/$src/triage.md" ]; then cat "$ADAPTERS_DIR/$src/triage.md"; fi
-                printf "%s %s %s %s\n" "$src" "$model" "$nchunks" "$elided"
+                printf "%s %s %s %s %s\n" "$src" "$model" "$effv" "$nchunks" "$elided"
                 cat "$FINDINGS_DIR/$hash.stats.json" 2>/dev/null; } | shasum -a 1 2>/dev/null | cut -c1-8 )
       while [ "$ci" -le "$nchunks" ]; do
         cin=$(printf "%s/in/chunk-%02d.jsonl" "$chunkroot" "$ci")
@@ -3322,7 +3334,7 @@ EOF
   # and require an API key). Exported once so both the L1 xargs subshells and the L2
   # call inherit it.
   export CLAUDE_CODE_DISABLE_CLAUDE_MDS=1 DISABLE_TELEMETRY=1 DISABLE_ERROR_REPORTING=1
-  export CLAUDE_BIN AUTODREAM_DIR FINDINGS_DIR SLIM WORK_DIR ESCALATE_LIST
+  export CLAUDE_BIN AUTODREAM_DIR FINDINGS_DIR SLIM WORK_DIR AUTODREAM_ESCALATE_HASHES
   # The report-day window, read by the dispatcher subshell to cut a multi-day transcript.
   export WINDOW_ON SESSION_WINDOW WIN_START_EPOCH WIN_END_EPOCH TARGET_DATE
   # Chunked triage, read by the dispatcher subshell. L1_CHUNKING is the one switch: 0 leaves the

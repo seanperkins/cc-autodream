@@ -3433,6 +3433,41 @@ test_escalated_call_does_not_inherit_the_base_effort(){
   rm -rf "$root"
 }
 
+test_escalation_ignores_a_worker_rewriting_the_list(){
+  echo "# escalation: the decision is snapshotted before any worker runs; a worker rewriting escalate.txt changes nothing"
+  local root; root=$(setup_env)
+  mk_friction_session "$root" hot 10 0
+  mk_session "$root" quiet1
+  mk_session "$root" quiet2
+  export TZ=UTC FANOUT=1 MOCK_MODEL_LOG="$root/models.log" MOCK_TAMPER_ESCALATE=1 AUTODREAM_L1_ESCALATE_MAX=1
+  run_dream "$root"
+  unset TZ FANOUT MOCK_MODEL_LOG MOCK_TAMPER_ESCALATE AUTODREAM_L1_ESCALATE_MAX
+  assert_eq "$(model_for "$root" hot)" "claude-opus-5-5" "the selected session still runs on the escalation model"
+  assert_eq "$(model_for "$root" quiet1)" "claude-haiku-4-5" "a worker rewriting the list does not promote quiet1"
+  assert_eq "$(model_for "$root" quiet2)" "claude-haiku-4-5" "or quiet2"
+  assert_grep "$(fdir "$root")/run-stats.txt" 'l1_escalated: 1' "and the count still matches what ran"
+  rm -rf "$root"
+}
+test_escalation_skips_sessions_whose_findings_are_done(){
+  echo "# escalation: a session the dispatcher will skip (findings already on disk) takes no slot"
+  local root fd hotter; root=$(setup_env)
+  mk_friction_session "$root" hotter 14 0
+  mk_friction_session "$root" hot 10 0
+  fd=$(fdir "$root"); mkdir -p "$fd"; hotter="$root/projects/proj-a/hotter.jsonl"
+  printf '{"session_path":"%s","findings":[]}\n' "$hotter" > "$fd/$(hash_of "$hotter").json"
+  export TZ=UTC MOCK_MODEL_LOG="$root/models.log" AUTODREAM_L1_ESCALATE_MAX=1
+  run_dream "$root"
+  unset TZ MOCK_MODEL_LOG AUTODREAM_L1_ESCALATE_MAX
+  assert_eq "$(model_for "$root" hot)" "claude-opus-5-5" "the pending session gets the single slot"
+  assert_eq "$(model_for "$root" hotter)" "" "the finished one is never called"
+  assert_grep "$fd/run-stats.txt" 'l1_escalated: 1' "and only the session that ran is counted"
+  rm -rf "$root"
+}
+test_triage_prompt_retires_compliance_markers_in_the_absent_block_case(){
+  echo "# the triage prompt does not tell a worker to count markers when the stats block is absent"
+  assert_grep "$REPO/prompts/SESSION_TRIAGE.md" 'except `compliance_markers`, which is retired' "the derive-as-before clause carves out compliance_markers"
+}
+
 echo "cc-autodream integration tests (mock claude)"
 echo
 test_happy
@@ -3443,6 +3478,9 @@ test_escalation_off_and_all
 test_escalation_cap_and_overrides
 test_escalation_skips_noise_gated_sessions
 test_escalated_call_does_not_inherit_the_base_effort
+test_escalation_ignores_a_worker_rewriting_the_list
+test_escalation_skips_sessions_whose_findings_are_done
+test_triage_prompt_retires_compliance_markers_in_the_absent_block_case
 test_unreadable
 test_incomplete
 test_idempotent
@@ -6249,7 +6287,7 @@ test_a_chunk_that_fails_is_retried_alone_and_finished_chunks_are_reused(){
 test_a_cached_chunk_answer_is_not_reused_after_the_instructions_or_the_session_change(){
   echo "# chunking: a finished chunk answer is reused only under the same prompt, stats block and chunk note"
   local scenario
-  for scenario in prompt stats cap; do
+  for scenario in prompt stats cap effort; do
     local root; root=$(setup_env)
     local f; f=$(mk_chunky "$root" big 60); local h; h=$(hash_of "$f"); local fd; fd=$(fdir "$root")
     # Run 1: a permanent refusal on chunk 2 defers the date and leaves chunk 1's answer behind.
@@ -6263,9 +6301,11 @@ test_a_cached_chunk_answer_is_not_reused_after_the_instructions_or_the_session_c
         touch -t "$STAMP" "$f" ;;
       cap)    # chunk 1 keeps its text but is now chunk 1 of 2 with the middle omitted
         export AUTODREAM_L1_MAX_CHUNKS=2 ;;
+      effort) # the same prompt and model, but the retry runs at a different effort
+        export AUTODREAM_L1_EFFORT_CLAUDE=low ;;
     esac
     export MOCK_MODE=chunked MOCK_CALL_LOG="$root/calls2.log" AUTODREAM_L1_ROUNDS=1
-    run_chunked "$root"; unset MOCK_MODE MOCK_CALL_LOG AUTODREAM_L1_ROUNDS AUTODREAM_L1_MAX_CHUNKS
+    run_chunked "$root"; unset MOCK_MODE MOCK_CALL_LOG AUTODREAM_L1_ROUNDS AUTODREAM_L1_MAX_CHUNKS AUTODREAM_L1_EFFORT_CLAUDE
     assert_eq "$(grep -c '^01-' <(sed 's#.*/##' "$root/calls2.log"))" "1" "[$scenario] chunk 1 was called again, not served from the old answer"
     assert_nogrep "$root/run.out" "reuse: chunk 1/" "[$scenario] and the log does not say it reused it"
     assert_eq "$(jq -r 'has("error")' "$fd/$h.json" 2>/dev/null)" "false" "[$scenario] the session finished"
