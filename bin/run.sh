@@ -2,9 +2,9 @@
 # Autodream runner — invoked by launchd at ~3am local time.
 #
 # Two-layer pipeline:
-#   L1: For each of yesterday's session JSONLs, spawn a parallel `claude --model haiku`
+#   L1: For each of yesterday's session JSONLs, spawn a parallel `claude --model claude-sonnet-5-5 --effort low`
 #       running SESSION_TRIAGE.md → writes one findings.json per session.
-#   L2: One `claude` (CLI default model) running PROMPT.md with Glob and Read only → reads
+#   L2: One `claude --model claude-opus-5-5` (manifest pin) running PROMPT.md with Glob and Read only → reads
 #       all findings JSONs and prints the report on stdout, ending with AUTODREAM_REPORT_END,
 #       then an optional AUTODREAM_PINS_BEGIN/END block. run.sh is the only writer: it strips
 #       the sentinel into $DREAMS_DIR/YYYY-MM-DD.md, writes pins.jsonl from the block, and
@@ -76,7 +76,7 @@
 #   AUTODREAM_TRIAGE     set 1 to triage each delivered report into dreams/DATE.triage.md   default: 0
 #                        One extra read-only call on the L2 engine and model, after everything
 #                        else (bin/triage-dream.sh; never fatal). Off, nothing changes.
-#   AUTODREAM_L2_MODEL   pin the L2 aggregator model (every engine)   default: the adapter's own (claude: the CLI default)
+#   AUTODREAM_L2_MODEL   pin the L2 aggregator model (every engine)   default: the adapter's own (claude: claude-opus-5-5, its manifest l2_model)
 #   AUTODREAM_L2_MODEL_<NAME> / AUTODREAM_L1_MODEL_<NAME>  the same for one adapter only
 #   AUTODREAM_MARKER_EPOCH    first date whose report is REQUIRED to carry the
 #                             open-questions marker; earlier unmarked reports are treated
@@ -3230,7 +3230,7 @@ EOF
     fi
   fi
 
-  # ---- Layer 1: haiku triage, parallel, retried across sleep/network gaps ----
+  # ---- Layer 1: sonnet triage, parallel, retried across sleep/network gaps ----
   # Lean-query env (claude-cells internal/claude/query.go pattern): keep subscription
   # OAuth auth but strip per-call bloat — no CLAUDE.md auto-load, no telemetry/error
   # reporting. Combined with the per-call flags (--no-session-persistence, --tools,
@@ -3573,7 +3573,7 @@ EOF
   fi
 
   # ---- Normalize the project field deterministically from the session path ----
-  # SESSION_TRIAGE.md asks the L1 worker to emit "project" by hand, and haiku does it
+  # SESSION_TRIAGE.md asks the L1 worker to emit "project" by hand, and the worker does it
   # nondeterministically: one run surfaced the SAME -Users-sean dir as "-Users-sean",
   # "Users-sean" (dash stripped), and even the bare session UUID (filename, not dir).
   # That splinters L2's per-project grouping. The project is the bucket the runner already
@@ -3928,6 +3928,8 @@ PY
   # The aggregator call can also die to a mid-run sleep (this is what left exit 1 +
   # "no report" overnight). Retry until $REPORT_PATH is non-empty, waiting for the
   # network between attempts. Idempotent: a re-run overwrites the report harmlessly.
+  # FORK NOTE: adapters/claude/manifest.json pins l2_model (claude-opus-5-5), so the next
+  # paragraph describes upstream's default, not this fork's. Delete that key to follow the CLI.
   # NO --model BY DEFAULT. The aggregator runs on whatever the CLI's default is,
   # so upgrading the account upgrades the nightly report and nothing here has to
   # be edited.

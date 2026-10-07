@@ -2,6 +2,11 @@
 
 All notable changes to cc-autodream. Format loosely follows Keep a Changelog.
 
+## 2026-10-07
+
+### Changed
+- **Fork: the model pins live in the claude adapter, not in `run.sh`.** `adapters/claude/manifest.json` sets `l1_model` to `claude-sonnet-5-5` and `l2_model` to `claude-opus-5-5`, and the adapter's `l1-argv` and `warmup-argv` add `--effort low`. `AUTODREAM_L1_EFFORT_CLAUDE` changes the effort and an empty value drops the flag; `AUTODREAM_L1_MODEL_CLAUDE` and `AUTODREAM_L2_MODEL_CLAUDE` still win over the manifest. Upstream's defaults are haiku-4-5 for L1 and no L2 pin.
+
 ## 2026-10-04
 
 ### Added

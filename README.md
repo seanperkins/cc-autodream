@@ -288,7 +288,7 @@ going after you disconnect:
 
 ## How it works (short version)
 
-Two layers: a cheap per-session pass (`haiku`) extracts structured findings from each
+Two layers: a cheap per-session pass (`claude-sonnet-5-5` at low effort) extracts structured findings from each
 transcript, then a single smarter pass (`opus`) ranks them across the whole day and
 writes the report. It also diffs the changelog of each harness you work across (Claude
 Code, Codex, OMP) over the day, so the report can flag releases that change how you work.

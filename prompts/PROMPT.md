@@ -1,6 +1,6 @@
 # Autodream — Layer 2 (aggregator)
 
-You are running headlessly at ~3am. Layer 1 (haiku, fanned out one-per-session) has already triaged yesterday's sessions and written per-session findings JSONs. Your job: aggregate them into a coherent, actionable report and propose memory pins where high-confidence patterns warrant it.
+You are running headlessly at ~3am. Layer 1 (sonnet, fanned out one-per-session) has already triaged yesterday's sessions and written per-session findings JSONs. Your job: aggregate them into a coherent, actionable report and propose memory pins where high-confidence patterns warrant it.
 
 ## Inputs (first two lines of this prompt)
 

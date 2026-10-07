@@ -1079,17 +1079,13 @@ test_no_sessions(){
 # of the flag: a comment claiming "no --model" is not a check, and the mock
 # records the real argv.
 test_l2_uses_the_default_model(){
-  echo "# L2: no --model is passed unless AUTODREAM_L2_MODEL is set"
+  echo "# L2: the claude manifest's l2_model (fork pin) is passed unless AUTODREAM_L2_MODEL overrides it"
   local root; root=$(setup_env); mk_session "$root" sess1
   export FANOUT=1 MOCK_CAPTURE_DIR="$root/cap"; run_dream "$root"; unset FANOUT MOCK_CAPTURE_DIR
   local cap="$root/cap/l2-args.txt"
   assert_file "$cap" "captured the L2 argv"
-  if grep -qx -- '--model' "$cap"; then
-    no "no --model flag is passed by default (found one)"
-  else
-    ok "no --model flag is passed by default"
-  fi
-  # The call still has to be well-formed, or "no --model" would be satisfied by a
+  assert_eq "$(sed -n '/^--model$/{n;p;}' "$cap")" "claude-opus-5-5" "the manifest's L2 model is passed by default"
+  # The call still has to be well-formed, or a model line alone would be satisfied by a
   # run that never reached claude at all.
   assert_grep "$cap" '^[-][-]print$' "and the L2 call is otherwise intact"
   assert_nonempty "$root/dreams/$DATE.md" "and the report still lands"
@@ -1146,7 +1142,7 @@ test_l1_engine_comes_from_the_adapter(){
   export FANOUT=1 MOCK_CAPTURE_DIR="$root/cap"; run_dream "$root"; unset FANOUT MOCK_CAPTURE_DIR
   local args="$root/cap/l1-args.txt"
   assert_file "$args" "captured the L1 argv"
-  assert_eq "$(sed -n '/^--model$/{n;p;}' "$args")" "claude-haiku-4-5" "the manifest's default model is used"
+  assert_eq "$(sed -n '/^--model$/{n;p;}' "$args")" "claude-sonnet-5-5" "the manifest's default model is used"
   assert_grep "$args" '^--no-session-persistence$' "the adapter's flags are present"
   assert_grep "$root/cap/l1-env.txt" '^CLAUDE_CODE_DISABLE_CLAUDE_MDS=1$' "the adapter's l1-env reaches the worker"
   rm -rf "$root"
@@ -4413,9 +4409,9 @@ test_l2_engine_comes_from_an_adapter(){
   local root; root=$(setup_env); mk_session "$root" sess1
   export MOCK_CAPTURE_DIR="$root/cap"; run_dream "$root"; unset MOCK_CAPTURE_DIR
   assert_grep "$(fdir "$root")/run-stats.txt" '^l2_engine: claude$' "default: the first enabled adapter"
-  assert_grep "$(fdir "$root")/run-stats.txt" '^l2_model: default$' "claude names no L2 model, so the CLI default runs"
-  assert_grep "$(fdir "$root")/run-stats.txt" '^l1_model_claude: claude-haiku-4-5$' "run-stats records each adapter's L1 model"
-  assert_nogrep "$root/cap/l2-args.txt" '^--model$' "no --model reached the claude engine"
+  assert_grep "$(fdir "$root")/run-stats.txt" '^l2_model: claude-opus-5-5$' "the claude manifest pins L2 to opus-5-5"
+  assert_grep "$(fdir "$root")/run-stats.txt" '^l1_model_claude: claude-sonnet-5-5$' "run-stats records each adapter's L1 model"
+  assert_eq "$(sed -n '/^--model$/{n;p;}' "$root/cap/l2-args.txt")" "claude-opus-5-5" "the manifest's L2 model reached the claude engine"
   rm -rf "$root"
 
   root=$(setup_env); mk_session "$root" sess1

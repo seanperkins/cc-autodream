@@ -153,10 +153,15 @@ case "$cmd" in
     # adapter: tests/adapter-claude.sh pins it against that literal text, so a change here
     # that alters what the nightly runs has to say so. NO shell expansion of the paths in
     # the system prompt, hence the escaped dollar sign in the text.
+    #
+    # Fork pin: L1 runs at low effort. AUTODREAM_L1_EFFORT_CLAUDE overrides it and an empty value
+    # drops the flag; the config is sourced with set -a, so it reaches this process.
+    set -- "$1" "${AUTODREAM_L1_EFFORT_CLAUDE-low}"
     printf '%s\0' "${CLAUDE_BIN:-$HOME/.local/bin/claude}" \
       --print \
       --permission-mode bypassPermissions \
       --model "$1" \
+      ${2:+--effort "$2"} \
       --no-session-persistence \
       --tools Read Write \
       --disable-slash-commands \
@@ -170,10 +175,12 @@ case "$cmd" in
     # The same flags as an L1 worker, so the warmup exercises the same auth and settings path,
     # with a system prompt that asks for one word instead of a findings file. A warmup that took
     # a different path would refresh a token the workers never use.
+    set -- "$1" "${AUTODREAM_L1_EFFORT_CLAUDE-low}"
     printf '%s\0' "${CLAUDE_BIN:-$HOME/.local/bin/claude}" \
       --print \
       --permission-mode bypassPermissions \
       --model "$1" \
+      ${2:+--effort "$2"} \
       --no-session-persistence \
       --tools Read \
       --disable-slash-commands \
