@@ -6,7 +6,7 @@ Operating notes for working on this repo. Read this before changing `bin/run.sh`
 
 A nightly two-layer pipeline that reads yesterday's Claude Code session transcripts and produces a ranked daily report plus a few pinned MEMORY.md entries.
 
-- **Layer 1** (`prompts/SESSION_TRIAGE.md`, `claude-haiku-4-5`, fanned out one per session): reads one transcript, writes one findings JSON.
+- **Layer 1** (`prompts/SESSION_TRIAGE.md`, `claude-haiku-4-5`, fanned out one per session; claude sessions with measured friction go to `claude-opus-5-5`, see `select_escalations` in `bin/run.sh`): reads one transcript, writes one findings JSON.
 - **Layer 2** (`prompts/PROMPT.md`, `claude-opus-5-5` through the claude manifest, single call): reads all findings JSONs, writes `dreams/YYYY-MM-DD.md`, optionally proposes pins to `pins.jsonl` for `run.sh` to apply.
 - **Model benchmark** (`bench/`, see `bench/README.md`): measures candidate L1 models and efforts against the frozen case set before `AUTODREAM_L1_MODEL` or `AUTODREAM_L1_EFFORT` is changed. `bench/l1-prod.sh` builds the L1 call from the claude adapter's `l1-argv`, the command `run.sh` starts. Phase 2 adds a reference (`bench/build_reference.py`) and a judge (`bench/judge.py`); `bench/grade_ref.py` scores runs against it.
 - `bin/run.sh` orchestrates both layers and everything around them.

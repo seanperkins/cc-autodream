@@ -28,6 +28,11 @@ jq -R -s \
   --argjson transcript_bytes "${bytes:-0}" \
   --argjson transcript_mtime "${mtime:-0}" \
   '
+  # The text of a tool_result: a plain string, or the text blocks of an array.
+  def result_text:
+    if (.content | type) == "string" then .content
+    elif (.content | type) == "array" then ([.content[]? | select(type == "object") | (.text? // empty)] | join(" "))
+    else "" end;
   [
     split("\n")[]
     | fromjson?
@@ -126,10 +131,26 @@ jq -R -s \
       | select(type == "string")
       | (try (capture("(^|/)skills/(?<name>[^/]+)/SKILL\\.md$") | .name) catch empty)
     ]) as $skills_authored
+  # Friction, counted from the structure and never grepped from the transcript: only
+  # tool_result blocks the harness marked is_error:true, so prose, the system prompt and
+  # successful results that happen to say permission can never inflate it.
+  | [
+      $lines[]
+      | select(.type == "user")
+      | .message.content?
+      | select(type == "array")
+      | .[]
+      | select(type == "object" and .type == "tool_result" and .is_error == true)
+    ] as $error_results
   | {
       user_message_count: ($user_messages | length),
       turn_count: ($turns | length),
       tool_call_count: ($tool_uses | length),
+      error_result_count: ($error_results | length),
+      # A denial is the harness own wording (sampled from real transcripts), not any text that
+      # mentions permission: EACCES, git Permission denied (publickey) and unrelated tool
+      # errors that merely contain the word were scoring at weight 3 each.
+      permission_denial_count: ([$error_results[] | select(result_text | test("permission (for this [a-z]+|to use [\\s\\S]{0,300}?) (was|has been) denied|denied by (the )?(claude code )?auto mode classifier|denied by (the |a )?built-in (claude code )?(safety )?check|auto mode classifier gave no verdict|not allowed in auto mode|requested permissions? to [\\s\\S]{0,300}?haven.t granted it"; "i"))] | length),
       tools_used: (
         $tool_uses
         | map(.name)

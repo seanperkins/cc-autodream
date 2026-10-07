@@ -883,7 +883,7 @@ test_session_stats(){
     '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"b","content":"result"}]}}' > "$fixture"
   "$REPO/bin/session-stats.sh" "$fixture" "$out"
   assert_eq "$(jq -r 'keys | sort | join(",")' "$out")" \
-    "compliance_markers,duration_minutes,isSidechain,models_used,skills_authored,skills_invoked,skills_invoked_count,skills_invoked_counts,tool_call_count,tools_used,transcript_bytes,transcript_mtime,turn_count,user_message_count,user_turn_timestamps" \
+    "compliance_markers,duration_minutes,error_result_count,isSidechain,models_used,permission_denial_count,skills_authored,skills_invoked,skills_invoked_count,skills_invoked_counts,tool_call_count,tools_used,transcript_bytes,transcript_mtime,turn_count,user_message_count,user_turn_timestamps" \
     "stats output has exactly the specified fields"
   assert_eq "$(jq -r '.user_turn_timestamps | length' "$out")" "0" "no timestamped user turns in this fixture -> empty user_turn_timestamps"
   assert_eq "$(jq -r .user_message_count "$out")" "1" "tool_result carriers are excluded from user message count"
@@ -3273,10 +3273,176 @@ test_overlap_not_measured_malformed_output(){
 [ -x "$RUN" ]  || { echo "FATAL: $RUN not executable"; exit 1; }
 [ -x "$MOCK" ] || { echo "FATAL: $MOCK not executable"; exit 1; }
 
+# ---- Friction signals and model escalation ------------------------------------------
+# Haiku missed a real permission-gate finding that Opus reported from the same input
+# (one session, one run each), so a stronger model is spent where friction was MEASURED.
+# The signal is counted from is_error:true tool_result blocks, never grepped from the
+# transcript: a session whose system prompt or discussion merely mentions "permission"
+# has no friction, and escalating on that would spend Opus on the wrong sessions.
+test_session_stats_friction(){
+  echo "# friction counts come from is_error tool_result blocks only, and a denial is the harness own wording"
+  local root; root=$(mktemp -d "${TMPDIR:-/tmp}/ccad.XXXXXX")
+  local fixture="$root/friction.jsonl" out="$root/friction.stats.json"
+  # Wordings are real, sampled from this host transcripts (2026-10-02). The permission
+  # pattern first matched bare "permission|denied", which also scored EACCES, git
+  # "Permission denied (publickey)" and an unrelated SendMessage error that merely
+  # contains the word permission, each at weight 3 (found in review).
+  printf '%s\n' \
+    '{"type":"user","timestamp":"2020-01-02T12:00:00Z","message":{"content":"the word permission denied appears in my own message"}}' \
+    '{"type":"assistant","timestamp":"2020-01-02T12:00:05Z","message":{"content":[{"type":"text","text":"Permission was denied by auto mode, says this assistant prose"}]}}' \
+    '{"type":"user","timestamp":"2020-01-02T12:01:00Z","message":{"content":[{"type":"tool_result","tool_use_id":"a","is_error":true,"content":"Permission to use Bash has been denied."}]}}' \
+    '{"type":"user","timestamp":"2020-01-02T12:02:00Z","message":{"content":[{"type":"tool_result","tool_use_id":"b","is_error":true,"content":[{"type":"text","text":"Error: file not found"}]}]}}' \
+    '{"type":"user","timestamp":"2020-01-02T12:03:00Z","message":{"content":[{"type":"tool_result","tool_use_id":"c","is_error":true,"content":[{"type":"text","text":"The action was blocked: not allowed in auto mode"}]}]}}' \
+    '{"type":"user","timestamp":"2020-01-02T12:04:00Z","message":{"content":[{"type":"tool_result","tool_use_id":"d","is_error":false,"content":"Permission for this action was denied is only a string in a successful result"}]}}' \
+    '{"type":"user","timestamp":"2020-01-03T12:00:00Z","message":{"content":[{"type":"tool_result","tool_use_id":"e","is_error":true,"content":"Error the next day"}]}}' \
+    '{"type":"user","timestamp":"2020-01-02T12:05:00Z","message":{"content":[{"type":"tool_result","tool_use_id":"f","is_error":true,"content":"Permission for this action was denied by the Claude Code auto mode classifier. Reason: [Production Deploy]. If you intended this, ask the user."}]}}' \
+    '{"type":"user","timestamp":"2020-01-02T12:06:00Z","message":{"content":[{"type":"tool_result","tool_use_id":"g","is_error":true,"content":"EACCES: permission denied, open /etc/hosts"}]}}' \
+    '{"type":"user","timestamp":"2020-01-02T12:07:00Z","message":{"content":[{"type":"tool_result","tool_use_id":"h","is_error":true,"content":"git@github.com: Permission denied (publickey)."}]}}' \
+    '{"type":"user","timestamp":"2020-01-02T12:08:00Z","message":{"content":[{"type":"tool_result","tool_use_id":"i","is_error":true,"content":"<tool_use_error>message text must not be a teammate protocol frame (permission/mode/plan/shutdown JSON)</tool_use_error>"}]}}' \
+    '{"type":"user","timestamp":"2020-01-02T12:09:00Z","message":{"content":[{"type":"tool_result","tool_use_id":"j","is_error":true,"content":"The server-side auto mode classifier gave no verdict (error), so auto mode cannot determine the safety of Bash."}]}}' \
+    '{"type":"user","timestamp":"2020-01-02T12:10:00Z","message":{"content":[{"type":"tool_result","tool_use_id":"k","is_error":true,"content":"The command was denied by a built-in Claude Code safety check."}]}}' \
+    '{"type":"user","timestamp":"2020-01-02T12:11:00Z","message":{"content":[{"type":"tool_result","tool_use_id":"l","is_error":true,"content":"Claude requested permissions to use Bash, but you haven\u0027t granted it yet."}]}}' \
+    '{"type":"user","timestamp":"2020-01-02T12:12:00Z","message":{"content":[{"type":"tool_result","tool_use_id":"m","is_error":true,"content":"Claude requested permissions to write to /x/y, but you haven\u0027t granted it yet."}]}}' \
+    '{"type":"user","timestamp":"2020-01-02T12:13:00Z","message":{"content":[{"type":"tool_result","tool_use_id":"n","is_error":true,"content":"The request was denied by a built-in firewall rule."}]}}' > "$fixture"
+  "$REPO/bin/session-stats.sh" "$fixture" "$out"
+  assert_eq "$(jq -r .error_result_count "$out")" "13" "thirteen is_error results; the is_error:false one and all prose are not counted"
+  assert_eq "$(jq -r .permission_denial_count "$out")" "7" "seven are harness denials (to use / for this action / not allowed in auto mode / classifier no verdict / denied by a built-in check / headless requested-permissions to use and to write to); EACCES, publickey, the SendMessage error and an unrelated built-in firewall denial are not"
+  printf '%s\n' '{"type":"user","message":{"content":"quiet"}}' > "$fixture"
+  "$REPO/bin/session-stats.sh" "$fixture" "$out"
+  assert_eq "$(jq -r '[.error_result_count, .permission_denial_count] | @csv' "$out")" "0,0" "a session with no errors reports 0,0 (keys always present)"
+  rm -rf "$root"
+}
+mk_friction_session(){ # $1=root $2=name $3=is_error results $4=of which permission denials
+  local f="$1/projects/proj-a/$2.jsonl" i msg
+  printf '%s\n' \
+    '{"type":"user","timestamp":"2020-01-02T12:00:00Z","message":{"content":"start"}}' \
+    '{"type":"user","timestamp":"2020-01-02T12:00:10Z","message":{"content":"continue"}}' > "$f"
+  for i in $(seq 1 "$3"); do
+    if [ "$i" -le "$4" ]; then msg="Permission to use Bash has been denied."; else msg="Error: command failed with exit code 1"; fi
+    printf '{"type":"assistant","timestamp":"2020-01-02T12:01:%02dZ","message":{"content":[{"type":"tool_use","id":"t%d","name":"Bash","input":{"command":"x"}}]}}\n' "$i" "$i" >> "$f"
+    printf '{"type":"user","timestamp":"2020-01-02T12:02:%02dZ","message":{"content":[{"type":"tool_result","tool_use_id":"t%d","is_error":true,"content":"%s"}]}}\n' "$i" "$i" "$msg" >> "$f"
+  done
+  touch -t "$STAMP" "$f"
+}
+model_for(){ # $1=root $2=session name -> the model the L1 worker was asked for ("" if never called)
+  grep -F "$(hash_of "$1/projects/proj-a/$2.jsonl").json" "$1/models.log" 2>/dev/null | head -1 | cut -f2
+}
+test_escalation_friction(){
+  echo "# default: Opus only for sessions whose measured friction clears the bar"
+  local root; root=$(setup_env)
+  mk_friction_session "$root" hot 10 0       # score 10
+  mk_friction_session "$root" warm 3 2       # score 3 + 3*2 = 9
+  mk_friction_session "$root" cool 2 0       # score 2
+  mk_session "$root" quiet                   # no friction at all
+  export TZ=UTC MOCK_MODEL_LOG="$root/models.log"
+  run_dream "$root"
+  unset TZ MOCK_MODEL_LOG
+  assert_eq "$(model_for "$root" hot)" "claude-opus-5-5" "10 errors -> escalated"
+  assert_eq "$(model_for "$root" warm)" "claude-opus-5-5" "3 errors + 2 denials (weighted 9) -> escalated"
+  assert_eq "$(model_for "$root" cool)" "claude-haiku-4-5" "2 errors -> stays on Haiku"
+  assert_eq "$(model_for "$root" quiet)" "claude-haiku-4-5" "no friction -> stays on Haiku"
+  assert_grep "$(fdir "$root")/run-stats.txt" 'l1_escalated: 2' "run-stats counts the escalations"
+  rm -rf "$root"
+}
+test_escalation_off_and_all(){
+  echo "# off never escalates; all always does"
+  local root; root=$(setup_env)
+  mk_friction_session "$root" hot 10 0
+  mk_session "$root" quiet
+  export TZ=UTC MOCK_MODEL_LOG="$root/models.log" AUTODREAM_L1_ESCALATE=off
+  run_dream "$root"
+  unset TZ MOCK_MODEL_LOG AUTODREAM_L1_ESCALATE
+  assert_eq "$(model_for "$root" hot)" "claude-haiku-4-5" "off: even the hottest session stays on Haiku"
+  assert_grep "$(fdir "$root")/run-stats.txt" 'l1_escalated: 0' "off: nothing counted"
+  rm -rf "$root"
+  root=$(setup_env)
+  mk_friction_session "$root" hot 10 0
+  mk_session "$root" quiet
+  export TZ=UTC MOCK_MODEL_LOG="$root/models.log" AUTODREAM_L1_ESCALATE=all
+  run_dream "$root"
+  unset TZ MOCK_MODEL_LOG AUTODREAM_L1_ESCALATE
+  assert_eq "$(model_for "$root" quiet)" "claude-opus-5-5" "all: even a session with no friction gets Opus"
+  assert_eq "$(model_for "$root" hot)" "claude-opus-5-5" "all: and the hot one"
+  rm -rf "$root"
+}
+test_escalation_cap_and_overrides(){
+  echo "# the per-run cap keeps the hottest sessions; the model and bar are configurable"
+  local root; root=$(setup_env)
+  mk_friction_session "$root" hotter 14 0
+  mk_friction_session "$root" hot 10 0
+  export TZ=UTC MOCK_MODEL_LOG="$root/models.log" AUTODREAM_L1_ESCALATE_MAX=1 AUTODREAM_L1_ESCALATE_MODEL=claude-sonnet-5-5
+  run_dream "$root"
+  unset TZ MOCK_MODEL_LOG AUTODREAM_L1_ESCALATE_MAX AUTODREAM_L1_ESCALATE_MODEL
+  assert_eq "$(model_for "$root" hotter)" "claude-sonnet-5-5" "cap 1: the hottest session gets the configured escalation model"
+  assert_eq "$(model_for "$root" hot)" "claude-haiku-4-5" "cap 1: the second-hottest does not"
+  assert_grep "$(fdir "$root")/run-stats.txt" 'l1_escalated: 1' "and only one is counted"
+  rm -rf "$root"
+  root=$(setup_env)
+  mk_friction_session "$root" hot 10 0
+  export TZ=UTC MOCK_MODEL_LOG="$root/models.log" AUTODREAM_L1_ESCALATE_MIN=11
+  run_dream "$root"
+  unset TZ MOCK_MODEL_LOG AUTODREAM_L1_ESCALATE_MIN
+  assert_eq "$(model_for "$root" hot)" "claude-haiku-4-5" "a raised bar (11) leaves a score-10 session on Haiku"
+  rm -rf "$root"
+}
+
+test_escalation_skips_noise_gated_sessions(){
+  echo "# escalation slots are not spent on sessions the noise gate then skips"
+  local root gated f
+  root=$(setup_env)
+  mk_friction_session "$root" hot 10 0     # a real session: 2 user turns, score 10
+  # one user turn and 3 tool calls, all permission denials: score 3 + 9 = 12, but the noise
+  # gate skips it (under 2 user turns and under 5 tool calls). It must not take the slot.
+  gated="$root/projects/proj-a/gated.jsonl"
+  printf '%s\n' '{"type":"user","timestamp":"2020-01-02T12:00:00Z","message":{"content":"one prompt only"}}' > "$gated"
+  for i in 1 2 3; do
+    printf '{"type":"assistant","timestamp":"2020-01-02T12:01:%02dZ","message":{"content":[{"type":"tool_use","id":"g%d","name":"Bash","input":{"command":"x"}}]}}\n' "$i" "$i" >> "$gated"
+    printf '{"type":"user","timestamp":"2020-01-02T12:02:%02dZ","message":{"content":[{"type":"tool_result","tool_use_id":"g%d","is_error":true,"content":"Permission to use Bash has been denied."}]}}\n' "$i" "$i" >> "$gated"
+  done
+  touch -t "$STAMP" "$gated"
+  export TZ=UTC MOCK_MODEL_LOG="$root/models.log" AUTODREAM_L1_ESCALATE_MAX=1
+  run_dream "$root"
+  unset TZ MOCK_MODEL_LOG AUTODREAM_L1_ESCALATE_MAX
+  assert_eq "$(model_for "$root" hot)" "claude-opus-5-5" "the real session gets the single slot"
+  assert_grep "$(fdir "$root")/run-stats.txt" 'l1_escalated: 1' "and only it is counted"
+  rm -rf "$root"
+  root=$(setup_env); mk_session "$root" quiet
+  gated="$root/projects/proj-a/gated.jsonl"
+  printf '%s\n' '{"type":"user","timestamp":"2020-01-02T12:00:00Z","message":{"content":"one prompt only"}}' > "$gated"; touch -t "$STAMP" "$gated"
+  export TZ=UTC MOCK_MODEL_LOG="$root/models.log" AUTODREAM_L1_ESCALATE=all
+  run_dream "$root"
+  unset TZ MOCK_MODEL_LOG AUTODREAM_L1_ESCALATE
+  assert_grep "$(fdir "$root")/run-stats.txt" 'l1_escalated: 1' "all mode counts only the session that will actually be called, not the gated one"
+  rm -rf "$root"
+}
+test_escalated_call_does_not_inherit_the_base_effort(){
+  echo "# an escalated call runs the escalation model at its own default effort, never the base effort"
+  local root cap
+  root=$(setup_env); mk_friction_session "$root" hot 10 0; cap="$root/cap"; mkdir -p "$cap"
+  export TZ=UTC MOCK_CAPTURE_DIR="$cap" AUTODREAM_L1_MODEL=claude-sonnet-5-5 AUTODREAM_L1_EFFORT=high
+  run_dream "$root"
+  unset TZ MOCK_CAPTURE_DIR AUTODREAM_L1_MODEL AUTODREAM_L1_EFFORT
+  assert_grep   "$cap/l1-args.txt" '^claude-opus-5-5$' "the escalated session runs the escalation model"
+  assert_nogrep "$cap/l1-args.txt" '^--effort$' "and carries no --effort from the base configuration"
+  rm -rf "$root"
+  root=$(setup_env); mk_session "$root" quiet; cap="$root/cap"; mkdir -p "$cap"
+  export TZ=UTC MOCK_CAPTURE_DIR="$cap" AUTODREAM_L1_MODEL=claude-sonnet-5-5 AUTODREAM_L1_EFFORT=high
+  run_dream "$root"
+  unset TZ MOCK_CAPTURE_DIR AUTODREAM_L1_MODEL AUTODREAM_L1_EFFORT
+  assert_grep   "$cap/l1-args.txt" '^--effort$' "control: a non-escalated session still gets the base effort"
+  rm -rf "$root"
+}
+
 echo "cc-autodream integration tests (mock claude)"
 echo
 test_happy
 test_session_stats
+test_session_stats_friction
+test_escalation_friction
+test_escalation_off_and_all
+test_escalation_cap_and_overrides
+test_escalation_skips_noise_gated_sessions
+test_escalated_call_does_not_inherit_the_base_effort
 test_unreadable
 test_incomplete
 test_idempotent

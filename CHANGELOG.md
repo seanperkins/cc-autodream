@@ -4,6 +4,9 @@ All notable changes to cc-autodream. Format loosely follows Keep a Changelog.
 
 ## 2026-10-07
 
+### Added
+- **Fork: friction-gated model escalation, re-ported onto the adapter dispatch.** `session-stats.sh` counts `error_result_count` and `permission_denial_count` from `is_error` tool_result blocks; claude sessions scoring at least `AUTODREAM_L1_ESCALATE_MIN` (8) on `errors + 3 * denials` go to `AUTODREAM_L1_ESCALATE_MODEL` (`claude-opus-5-5`), at most `AUTODREAM_L1_ESCALATE_MAX` (6) per run, hottest first. `AUTODREAM_L1_ESCALATE=off|friction|all` (default `friction`). A denial is the harness own wording, not any text containing permission, and sessions the noise gate skips take no slot. An escalated call runs at the escalation model default effort, never the base `--effort`. Other adapters are never escalated. `run-stats.txt` gains `l1_escalated` and `l1_escalate_mode`.
+
 ### Changed
 - **`compliance_markers` retired; `tool_loop` is no longer keyed on a marker.** No rule loaded on this host defines `RETRY-BUDGET:`, `FETCH-PIVOT:`, `DELEGATED:` or `DIRECT-OK:`, so the L1 counts were structurally zero and `tool_loop` findings that cited a missing marker were false positives. L1 copies the field from the stats block when one is present and never counts marker lines itself; L2 ignores it and no longer reports marker totals or splits `tool_loop` patterns by marker presence. The field stays in the schema so existing consumers do not hit a missing key.
 - **Fork: the L2 model pin lives in the claude adapter manifest.** `adapters/claude/manifest.json` sets `l2_model` to `claude-opus-5-5` (upstream has no L2 pin); L1 stays `claude-haiku-4-5`. `l1-argv` and `warmup-argv` take an optional `--effort` from `AUTODREAM_L1_EFFORT_CLAUDE`, then `AUTODREAM_L1_EFFORT`, and send none by default because Haiku 4.5 rejects it. `AUTODREAM_L1_MODEL_CLAUDE` and `AUTODREAM_L2_MODEL_CLAUDE` still win over the manifest.

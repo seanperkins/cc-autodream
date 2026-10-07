@@ -75,6 +75,7 @@
 #                            JSON values in one file.
 #   MOCK_TRANSCRIPT_LOG=<file>  append "<transcript path><TAB><its bytes>" for every L1 call, so a
 #                            test can prove how much a worker was handed.
+#   MOCK_MODEL_LOG=<file>    append "<output path><TAB><model>" for every L1 call.
 #   MOCK_CAPTURE_DIR=<dir>   dump each layer's stdin + argv to <dir>/l{1,2}-*.txt
 #                            so tests can assert on the exact prompt framing.
 #   MOCK_CALL_LOG=<file>     append the L1 output path for every invocation of
@@ -133,6 +134,12 @@ if printf '%s' "$line1" | grep -q '^Session transcript'; then
   [ -n "${MOCK_CAPTURE_DIR:-}" ] && printf '%s\n' "$@" > "$MOCK_CAPTURE_DIR/l1-args-$(basename "$out" .json).txt"
   [ -n "${MOCK_CAPTURE_DIR:-}" ] && printf '%s' "$input" > "$MOCK_CAPTURE_DIR/l1-stdin-$(basename "$out" .json).txt"
   [ -n "${MOCK_TRANSCRIPT_LOG:-}" ] && printf '%s\t%s\n' "$sess" "$(wc -c < "$sess" 2>/dev/null | tr -d ' ')" >> "$MOCK_TRANSCRIPT_LOG"
+  # The model this call asked for, so a test can prove WHICH model a session got.
+  if [ -n "${MOCK_MODEL_LOG:-}" ]; then
+    _m=""; _prev=""
+    for _a in "$@"; do [ "$_prev" = "--model" ] && _m="$_a"; _prev="$_a"; done
+    printf '%s\t%s\n' "$out" "$_m" >> "$MOCK_MODEL_LOG"
+  fi
   # Chunk I of N, from the chunk note the runner appends to the prompt of one chunk of a longer
   # session. Empty for an ordinary session.
   ci=""; cn=""

@@ -79,6 +79,12 @@
 #   AUTODREAM_L2_MODEL   pin the L2 aggregator model (every engine)   default: the adapter's own (claude: claude-opus-5-5, its manifest l2_model)
 #   AUTODREAM_L2_MODEL_<NAME> / AUTODREAM_L1_MODEL_<NAME>  the same for one adapter only
 #   AUTODREAM_L1_EFFORT_CLAUDE / AUTODREAM_L1_EFFORT  --effort for the claude L1 worker and warmup   default: none (Haiku 4.5 rejects it)
+#   AUTODREAM_L1_ESCALATE     off | friction | all: which claude sessions get the stronger
+#                        L1 model                                            default: friction
+#   AUTODREAM_L1_ESCALATE_MIN    friction score bar (errors + 3 * permission denials)  default: 8
+#   AUTODREAM_L1_ESCALATE_MAX    sessions per run, hottest first (friction mode); the cost
+#                        ceiling is this times MAX_CHUNKS Opus calls, 6 x 8 by default   default: 6
+#   AUTODREAM_L1_ESCALATE_MODEL  model for an escalated session           default: claude-opus-5-5
 #   AUTODREAM_MARKER_EPOCH    first date whose report is REQUIRED to carry the
 #                             open-questions marker; earlier unmarked reports are treated
 #                             as complete (legacy) rather than abandoned
@@ -227,6 +233,8 @@ FINDINGS_DIR="$AUTODREAM_DIR/findings/$TARGET_DATE"
 REPORT_PATH="$DREAMS_DIR/$TARGET_DATE.md"
 RUN_LOG="$LOG_DIR/run-$TARGET_DATE.log"
 SESSIONS_LIST="$FINDINGS_DIR/sessions.txt"
+ESCALATE_LIST="$FINDINGS_DIR/escalate.txt"   # hashes the L1 fan-out sends to the escalation model
+ESCALATED=0
 
 # Self-session prune helper — single source of truth for "is this autodream's own
 # transcript?". Resolve it next to this script first (works for the repo copy and the
@@ -2134,6 +2142,68 @@ compute_session_stats() {
   done < "$SESSIONS_LIST"
 }
 
+# ---- Model escalation: spend a stronger L1 model where friction was MEASURED ----
+# Haiku missed a real permission-gate finding that Opus reported from the same input
+# (one session, one run each; the repo L1 benchmark shows the same direction), and Opus
+# costs about 15x as much per run, so it is not the default for every session. The
+# decision uses the stats sidecar, which counts is_error tool_result blocks (never a
+# grep of the transcript, which would count prose and the system prompt).
+#
+# The knobs are documented in the header of this file. score = error_result_count +
+# 3 * permission_denial_count. The bar of 8 was calibrated on 16 real sessions: quiet ones
+# scored 0-4, the session with the real permission finding scored 8, heavy-friction ones
+# 22-71. The cost of an escalated session is per CHUNK, so a multi-chunk session costs
+# several calls; the MAX cap counts sessions, not chunks. Claude sessions only: the model id
+# belongs to that engine, and only its stats carry the friction counts.
+# Written once, before any L1 call, so every retry round sends a session to the same model.
+
+# l1_noise_gated STATS_FILE -> exit 0 when the noise gate would skip this session. The same
+# predicate the L1 worker applies (the gate block in dispatch_l1), kept here so a gated session
+# never takes an escalation slot; tests/run-all.sh pins the two together.
+l1_noise_gated() {
+  [ -s "$1" ] || return 1
+  local g
+  g=$(jq -r --argjson min_turns "${AUTODREAM_MIN_USER_TURNS:-2}" --argjson min_minutes "${AUTODREAM_MIN_MINUTES:-1}" \
+    'if (.isSidechain == true) or ((.tool_call_count // 0) >= 5) then 0 elif (.user_message_count // 0) < $min_turns then 1 elif ((.duration_minutes // 0) > 0) and ((.duration_minutes // 0) < $min_minutes) then 1 else 0 end' "$1" 2>/dev/null)
+  [ "$g" = "1" ]
+}
+
+select_escalations() {
+  local mode="${AUTODREAM_L1_ESCALATE:-friction}" min="${AUTODREAM_L1_ESCALATE_MIN:-8}" max="${AUTODREAM_L1_ESCALATE_MAX:-6}"
+  local session hash stats src
+  ESCALATED=0
+  : > "$ESCALATE_LIST" 2>/dev/null || { log "WARNING: cannot write $ESCALATE_LIST; escalation is OFF this run"; return 0; }
+  case "$mode" in
+    off) return 0 ;;
+    friction|all) ;;
+    *) log "WARNING: AUTODREAM_L1_ESCALATE=$mode is not off, friction or all; escalation is OFF this run"; return 0 ;;
+  esac
+  case "$min" in ''|*[!0-9]*) log "WARNING: AUTODREAM_L1_ESCALATE_MIN=$min is not a number; using 8"; min=8 ;; esac
+  case "$max" in ''|*[!0-9]*) log "WARNING: AUTODREAM_L1_ESCALATE_MAX=$max is not a number; using 6"; max=6 ;; esac
+  while IFS= read -r session; do
+    [ -n "$session" ] || continue
+    hash=$(session_hash "$session") || continue
+    src=$(awk -F'\t' -v h="$hash" '$1 == h { print $2; exit }' "$FINDINGS_DIR/sessions-source.txt" 2>/dev/null)
+    [ "$src" = claude ] || continue
+    stats="$FINDINGS_DIR/$hash.stats.json"
+    # A session the noise gate will skip never reaches a model, so it must not take a slot
+    # or be counted.
+    l1_noise_gated "$stats" && continue
+    if [ "$mode" = all ]; then printf '999999\t%s\n' "$hash"; continue; fi
+    [ -s "$stats" ] || continue
+    jq -r --arg h "$hash" '"\(((.error_result_count // 0) + 3 * (.permission_denial_count // 0)))\t\($h)"' "$stats" 2>/dev/null
+  done < "$SESSIONS_LIST" > "$ESCALATE_LIST.scores"
+  if [ "$mode" = all ]; then
+    cut -f2 "$ESCALATE_LIST.scores" > "$ESCALATE_LIST"
+  else
+    awk -F'\t' -v min="$min" '$1 + 0 >= min + 0' "$ESCALATE_LIST.scores" \
+      | sort -t "$TAB" -k1,1nr -k2,2 | head -n "$max" | cut -f2 > "$ESCALATE_LIST"
+  fi
+  rm -f "$ESCALATE_LIST.scores"
+  ESCALATED=$(wc -l < "$ESCALATE_LIST" | tr -d ' ')
+  log "escalation ($mode): $ESCALATED session(s) go to ${AUTODREAM_L1_ESCALATE_MODEL:-claude-opus-5-5}"
+}
+
 # ---- Global overlap pass (#14): cross-session "multi-clauding" stat ----
 # Runs once compute_session_stats has written every session's *.stats.json sidecar
 # (each carries the mechanical user_turn_timestamps array). Overlap is a GLOBAL,
@@ -2372,13 +2442,22 @@ dispatch_l1() { # one parallel pass; idempotent worker → only the still-missin
     # environment (tests/adapter-contract.sh), so nothing here names claude or omp.
     src=$(printf "%s\n" "$AUTODREAM_SOURCE_MAP" | awk -F"\t" -v h="$hash" "\$1 == h { print \$2; exit }")
     model=$(printf "%s\n" "$AUTODREAM_L1_MODELS" | awk -F"\t" -v s="$src" "\$1 == s { print \$2; exit }")
+    # A session select_escalations picked runs on the escalation model. The base effort belongs
+    # to the base model (Haiku rejects --effort outright), so an escalated call runs at the
+    # escalation model default effort: the empty AUTODREAM_L1_EFFORT_CLAUDE below drops the flag.
+    escenv=""
+    if [ "$src" = claude ] && [ -s "${ESCALATE_LIST:-/nonexistent}" ] && grep -qxF "$hash" "$ESCALATE_LIST"; then
+      model="${AUTODREAM_L1_ESCALATE_MODEL:-claude-opus-5-5}"
+      escenv="AUTODREAM_L1_EFFORT_CLAUDE="
+      echo "escalated: $session ($hash) -> $model" >&2
+    fi
     argv=()
     envs=()
     case "$src" in
       ""|*[!abcdefghijklmnopqrstuvwxyz0123456789_-]*) src="" ;;
     esac
     if [ -n "$src" ] && [ -n "$model" ] && [ -x "$ADAPTERS_DIR/$src/adapter.sh" ]; then
-      while IFS= read -r -d "" arg; do argv+=("$arg"); done < <("$ADAPTERS_DIR/$src/adapter.sh" l1-argv "$model" 2>/dev/null)
+      while IFS= read -r -d "" arg; do argv+=("$arg"); done < <(env ${escenv:+"$escenv"} "$ADAPTERS_DIR/$src/adapter.sh" l1-argv "$model" 2>/dev/null)
       while IFS= read -r line; do [ -n "$line" ] && envs+=("$line"); done < <("$ADAPTERS_DIR/$src/adapter.sh" l1-env 2>/dev/null)
     fi
     if [ "${#argv[@]}" -eq 0 ]; then
@@ -3106,6 +3185,8 @@ run() {
       printf 'l1_chunks: 0\n'
       printf 'l1_chunk_calls: 0\n'
       printf 'l1_chunks_elided: 0\n'
+      printf 'l1_escalated: 0\n'
+      printf 'l1_escalate_mode: %s\n' "${AUTODREAM_L1_ESCALATE:-friction}"
       printf 'l1_findings_written: 0\n'
       printf 'l1_missing_after_retries: 0\n'
       printf 'l1_err_files: %s\n' "$early_err_files"
@@ -3191,6 +3272,7 @@ EOF
   # Compute once from the final enumeration. Retry rounds reuse these sidecars;
   # they are intentionally not regenerated during dispatch retries.
   compute_session_stats
+  select_escalations
 
   # Global pass: must run AFTER every session's sidecar exists (overlap is a
   # cross-session computation, not per-session). Deliberately BEFORE the noise gate
@@ -3240,7 +3322,7 @@ EOF
   # and require an API key). Exported once so both the L1 xargs subshells and the L2
   # call inherit it.
   export CLAUDE_CODE_DISABLE_CLAUDE_MDS=1 DISABLE_TELEMETRY=1 DISABLE_ERROR_REPORTING=1
-  export CLAUDE_BIN AUTODREAM_DIR FINDINGS_DIR SLIM WORK_DIR
+  export CLAUDE_BIN AUTODREAM_DIR FINDINGS_DIR SLIM WORK_DIR ESCALATE_LIST
   # The report-day window, read by the dispatcher subshell to cut a multi-day transcript.
   export WINDOW_ON SESSION_WINDOW WIN_START_EPOCH WIN_END_EPOCH TARGET_DATE
   # Chunked triage, read by the dispatcher subshell. L1_CHUNKING is the one switch: 0 leaves the
@@ -3785,6 +3867,8 @@ PY
     printf 'l1_chunks: %s\n' "${L1_CHUNKS:-0}"
     printf 'l1_chunk_calls: %s\n' "${L1_CHUNK_CALLS:-0}"
     printf 'l1_chunks_elided: %s\n' "${L1_CHUNKS_ELIDED:-0}"
+    printf 'l1_escalated: %s\n' "$ESCALATED"
+    printf 'l1_escalate_mode: %s\n' "${AUTODREAM_L1_ESCALATE:-friction}"
     printf 'l1_findings_written: %s\n' "$L1_OK"
     printf 'l1_findings_with_error: %s\n' "$L1_ERRORED"
     # Why those stubs exist, by class. A silent worker death (exit 0, empty stdout), a provider
