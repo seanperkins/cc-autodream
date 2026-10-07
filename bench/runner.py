@@ -1,7 +1,7 @@
 """Candidate runner for the L1 benchmark. Stdlib only.
 
 Runs one candidate (model, effort) over every frozen case through the production L1
-invocation (bin/l1-invoke.sh via bench/run-one-l1.sh, on your CLI subscription). One row
+invocation (the claude adapter's l1-argv via bench/run-one-l1.sh, on your CLI subscription). One row
 is written per finished (case, rep); resume is idempotent on that key. Infrastructure
 failures (timeout, rate limit, refusal, CLI error, served-model mismatch) go to
 errors.jsonl and never occupy a result slot.
