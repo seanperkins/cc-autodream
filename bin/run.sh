@@ -78,6 +78,7 @@
 #                        else (bin/triage-dream.sh; never fatal). Off, nothing changes.
 #   AUTODREAM_L2_MODEL   pin the L2 aggregator model (every engine)   default: the adapter's own (claude: claude-opus-5-5, its manifest l2_model)
 #   AUTODREAM_L2_MODEL_<NAME> / AUTODREAM_L1_MODEL_<NAME>  the same for one adapter only
+#   AUTODREAM_L1_EFFORT_CLAUDE / AUTODREAM_L1_EFFORT  --effort for the claude L1 worker and warmup   default: none (Haiku 4.5 rejects it)
 #   AUTODREAM_MARKER_EPOCH    first date whose report is REQUIRED to carry the
 #                             open-questions marker; earlier unmarked reports are treated
 #                             as complete (legacy) rather than abandoned
