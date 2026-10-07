@@ -3463,6 +3463,27 @@ test_escalation_skips_sessions_whose_findings_are_done(){
   assert_grep "$fd/run-stats.txt" 'l1_escalated: 1' "and only the session that ran is counted"
   rm -rf "$root"
 }
+test_escalation_follows_reconcile_precedence_for_set_aside_findings(){
+  echo "# escalation: an invalid active findings file wins over a set-aside copy, as it does for reconcile and the dispatcher"
+  local root fd hotter hot q; root=$(setup_env)
+  mk_friction_session "$root" hotter 14 0
+  mk_friction_session "$root" hot 10 0
+  fd=$(fdir "$root"); q="$fd/outside-worklist"; mkdir -p "$q"
+  hotter="$root/projects/proj-a/hotter.jsonl"; hot="$root/projects/proj-a/hot.jsonl"
+  # hotter: a malformed active JSON and a valid set-aside copy. Reconcile will not restore over the active file,
+  # so the dispatcher retriages it, and it must have been allowed to take the slot.
+  printf '{"session_path":"%s"}\n' "$hotter" > "$fd/$(hash_of "$hotter").json"
+  printf '{"session_path":"%s","findings":[]}\n' "$hotter" > "$q/$(hash_of "$hotter").json"
+  # hot: only a valid set-aside copy. Reconcile restores it, the dispatcher skips it, so it takes no slot.
+  printf '{"session_path":"%s","findings":[]}\n' "$hot" > "$q/$(hash_of "$hot").json"
+  export TZ=UTC MOCK_MODEL_LOG="$root/models.log" AUTODREAM_L1_ESCALATE_MAX=1
+  run_dream "$root"
+  unset TZ MOCK_MODEL_LOG AUTODREAM_L1_ESCALATE_MAX
+  assert_eq "$(model_for "$root" hotter)" "claude-opus-5-5" "the retriaged session gets the single slot"
+  assert_eq "$(model_for "$root" hot)" "" "the restored one is never called"
+  assert_grep "$fd/run-stats.txt" 'l1_escalated: 1' "and only the session that ran is counted"
+  rm -rf "$root"
+}
 test_triage_prompt_retires_compliance_markers_in_the_absent_block_case(){
   echo "# the triage prompt does not tell a worker to count markers when the stats block is absent"
   assert_grep "$REPO/prompts/SESSION_TRIAGE.md" 'except `compliance_markers`, which is retired' "the derive-as-before clause carves out compliance_markers"
@@ -3480,6 +3501,7 @@ test_escalation_skips_noise_gated_sessions
 test_escalated_call_does_not_inherit_the_base_effort
 test_escalation_ignores_a_worker_rewriting_the_list
 test_escalation_skips_sessions_whose_findings_are_done
+test_escalation_follows_reconcile_precedence_for_set_aside_findings
 test_triage_prompt_retires_compliance_markers_in_the_absent_block_case
 test_unreadable
 test_incomplete

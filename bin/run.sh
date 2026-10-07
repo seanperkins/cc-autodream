@@ -2190,10 +2190,11 @@ select_escalations() {
     src=$(awk -F'\t' -v h="$hash" '$1 == h { print $2; exit }' "$FINDINGS_DIR/sessions-source.txt" 2>/dev/null)
     [ "$src" = claude ] || continue
     # A session with reusable findings is skipped by the dispatcher, so it must not take a slot or be
-    # counted. That includes findings reconcile_findings_with_worklist will move back from outside-worklist/.
-    for f in "$FINDINGS_DIR/$hash.json" "$FINDINGS_DIR/outside-worklist/$hash.json"; do
-      if [ -s "$f" ] && jq -e ".findings | arrays" "$f" >/dev/null 2>&1; then continue 2; fi
-    done
+    # counted. The file that counts is the one the dispatcher will see: the active findings JSON when one
+    # exists (reconcile_findings_with_worklist never restores over it, valid or not), otherwise the copy
+    # that function will move back from outside-worklist/.
+    f="$FINDINGS_DIR/$hash.json"; [ -e "$f" ] || f="$FINDINGS_DIR/outside-worklist/$hash.json"
+    if [ -s "$f" ] && jq -e ".findings | arrays" "$f" >/dev/null 2>&1; then continue; fi
     stats="$FINDINGS_DIR/$hash.stats.json"
     # A session the noise gate will skip never reaches a model, so it must not take a slot
     # or be counted.
