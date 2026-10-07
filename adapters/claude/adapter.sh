@@ -154,9 +154,10 @@ case "$cmd" in
     # that alters what the nightly runs has to say so. NO shell expansion of the paths in
     # the system prompt, hence the escaped dollar sign in the text.
     #
-    # Fork pin: L1 runs at low effort. AUTODREAM_L1_EFFORT_CLAUDE overrides it and an empty value
-    # drops the flag; the config is sourced with set -a, so it reaches this process.
-    set -- "$1" "${AUTODREAM_L1_EFFORT_CLAUDE-low}"
+    # Optional --effort, off by default: Haiku 4.5 rejects the flag. AUTODREAM_L1_EFFORT_CLAUDE
+    # sets it, then AUTODREAM_L1_EFFORT; an explicitly empty _CLAUDE drops it whatever the generic
+    # one says. The config is sourced with set -a, so both reach this process.
+    set -- "$1" "${AUTODREAM_L1_EFFORT_CLAUDE-${AUTODREAM_L1_EFFORT-}}"
     printf '%s\0' "${CLAUDE_BIN:-$HOME/.local/bin/claude}" \
       --print \
       --permission-mode bypassPermissions \
@@ -175,7 +176,7 @@ case "$cmd" in
     # The same flags as an L1 worker, so the warmup exercises the same auth and settings path,
     # with a system prompt that asks for one word instead of a findings file. A warmup that took
     # a different path would refresh a token the workers never use.
-    set -- "$1" "${AUTODREAM_L1_EFFORT_CLAUDE-low}"
+    set -- "$1" "${AUTODREAM_L1_EFFORT_CLAUDE-${AUTODREAM_L1_EFFORT-}}"
     printf '%s\0' "${CLAUDE_BIN:-$HOME/.local/bin/claude}" \
       --print \
       --permission-mode bypassPermissions \

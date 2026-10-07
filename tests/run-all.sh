@@ -1142,7 +1142,7 @@ test_l1_engine_comes_from_the_adapter(){
   export FANOUT=1 MOCK_CAPTURE_DIR="$root/cap"; run_dream "$root"; unset FANOUT MOCK_CAPTURE_DIR
   local args="$root/cap/l1-args.txt"
   assert_file "$args" "captured the L1 argv"
-  assert_eq "$(sed -n '/^--model$/{n;p;}' "$args")" "claude-sonnet-5-5" "the manifest's default model is used"
+  assert_eq "$(sed -n '/^--model$/{n;p;}' "$args")" "claude-haiku-4-5" "the manifest's default model is used"
   assert_grep "$args" '^--no-session-persistence$' "the adapter's flags are present"
   assert_grep "$root/cap/l1-env.txt" '^CLAUDE_CODE_DISABLE_CLAUDE_MDS=1$' "the adapter's l1-env reaches the worker"
   rm -rf "$root"
@@ -4410,7 +4410,7 @@ test_l2_engine_comes_from_an_adapter(){
   export MOCK_CAPTURE_DIR="$root/cap"; run_dream "$root"; unset MOCK_CAPTURE_DIR
   assert_grep "$(fdir "$root")/run-stats.txt" '^l2_engine: claude$' "default: the first enabled adapter"
   assert_grep "$(fdir "$root")/run-stats.txt" '^l2_model: claude-opus-5-5$' "the claude manifest pins L2 to opus-5-5"
-  assert_grep "$(fdir "$root")/run-stats.txt" '^l1_model_claude: claude-sonnet-5-5$' "run-stats records each adapter's L1 model"
+  assert_grep "$(fdir "$root")/run-stats.txt" '^l1_model_claude: claude-haiku-4-5$' "run-stats records each adapter's L1 model"
   assert_eq "$(sed -n '/^--model$/{n;p;}' "$root/cap/l2-args.txt")" "claude-opus-5-5" "the manifest's L2 model reached the claude engine"
   rm -rf "$root"
 

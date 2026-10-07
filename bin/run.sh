@@ -2,7 +2,7 @@
 # Autodream runner — invoked by launchd at ~3am local time.
 #
 # Two-layer pipeline:
-#   L1: For each of yesterday's session JSONLs, spawn a parallel `claude --model claude-sonnet-5-5 --effort low`
+#   L1: For each of yesterday's session JSONLs, spawn a parallel `claude --model haiku`
 #       running SESSION_TRIAGE.md → writes one findings.json per session.
 #   L2: One `claude --model claude-opus-5-5` (manifest pin) running PROMPT.md with Glob and Read only → reads
 #       all findings JSONs and prints the report on stdout, ending with AUTODREAM_REPORT_END,
@@ -3230,7 +3230,7 @@ EOF
     fi
   fi
 
-  # ---- Layer 1: sonnet triage, parallel, retried across sleep/network gaps ----
+  # ---- Layer 1: haiku triage, parallel, retried across sleep/network gaps ----
   # Lean-query env (claude-cells internal/claude/query.go pattern): keep subscription
   # OAuth auth but strip per-call bloat — no CLAUDE.md auto-load, no telemetry/error
   # reporting. Combined with the per-call flags (--no-session-persistence, --tools,
@@ -3573,7 +3573,7 @@ EOF
   fi
 
   # ---- Normalize the project field deterministically from the session path ----
-  # SESSION_TRIAGE.md asks the L1 worker to emit "project" by hand, and the worker does it
+  # SESSION_TRIAGE.md asks the L1 worker to emit "project" by hand, and haiku does it
   # nondeterministically: one run surfaced the SAME -Users-sean dir as "-Users-sean",
   # "Users-sean" (dash stripped), and even the bare session UUID (filename, not dir).
   # That splinters L2's per-project grouping. The project is the bucket the runner already

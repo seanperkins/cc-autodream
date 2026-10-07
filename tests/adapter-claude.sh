@@ -258,15 +258,16 @@ OLD_SETTINGS="{\"disableAllHooks\":true}"
 printf '%s\0' /opt/test/claude --print --permission-mode bypassPermissions --model claude-haiku-4-5 \
   --no-session-persistence --tools Read Write --disable-slash-commands --strict-mcp-config \
   --settings "$OLD_SETTINGS" --append-system-prompt "$OLD_SYSPROMPT" > "$tmp/old-argv"
-# The fork adds --effort low after --model; clearing AUTODREAM_L1_EFFORT_CLAUDE restores the old argv exactly.
-CLAUDE_BIN=/opt/test/claude AUTODREAM_L1_EFFORT_CLAUDE= "$A" l1-argv claude-haiku-4-5 > "$tmp/new-argv"
+# The fork adds an optional --effort after --model; with none set the argv is the old one exactly.
+env -u AUTODREAM_L1_EFFORT -u AUTODREAM_L1_EFFORT_CLAUDE CLAUDE_BIN=/opt/test/claude "$A" l1-argv claude-haiku-4-5 > "$tmp/new-argv"
 if cmp -s "$tmp/old-argv" "$tmp/new-argv"; then ok "the claude L1 argv is byte for byte the old hard-coded one"
 else no "the claude L1 argv is byte for byte the old hard-coded one"; fi
-echo "# l1-argv: the fork pins low effort, and the env var changes or drops it"
-assert_eq "$(env -u AUTODREAM_L1_EFFORT_CLAUDE CLAUDE_BIN=/opt/test/claude "$A" l1-argv claude-sonnet-5-5 | tr '\0' '\n' | sed -n '/^--effort$/{n;p;}')" "low" "effort defaults to low"
-assert_eq "$(AUTODREAM_L1_EFFORT_CLAUDE=medium CLAUDE_BIN=/opt/test/claude "$A" l1-argv claude-sonnet-5-5 | tr '\0' '\n' | sed -n '/^--effort$/{n;p;}')" "medium" "AUTODREAM_L1_EFFORT_CLAUDE overrides it"
-case "$(AUTODREAM_L1_EFFORT_CLAUDE= CLAUDE_BIN=/opt/test/claude "$A" l1-argv claude-sonnet-5-5 | tr '\0' '\n')" in *--effort*) no "an empty value drops --effort" ;; *) ok "an empty value drops --effort" ;; esac
-assert_eq "$(jq -r '.l1_model + " " + .l2_model' "$(dirname "$A")/manifest.json")" "claude-sonnet-5-5 claude-opus-5-5" "the manifest pins L1 sonnet-5-5 and L2 opus-5-5"
+echo "# l1-argv: --effort is off by default (Haiku rejects it); the env vars turn it on or drop it"
+case "$(env -u AUTODREAM_L1_EFFORT -u AUTODREAM_L1_EFFORT_CLAUDE CLAUDE_BIN=/opt/test/claude "$A" l1-argv claude-haiku-4-5 | tr '\0' '\n')" in *--effort*) no "no --effort by default" ;; *) ok "no --effort by default" ;; esac
+assert_eq "$(AUTODREAM_L1_EFFORT_CLAUDE=medium CLAUDE_BIN=/opt/test/claude "$A" l1-argv claude-sonnet-5-5 | tr '\0' '\n' | sed -n '/^--effort$/{n;p;}')" "medium" "AUTODREAM_L1_EFFORT_CLAUDE sets it"
+assert_eq "$(env -u AUTODREAM_L1_EFFORT_CLAUDE AUTODREAM_L1_EFFORT=high CLAUDE_BIN=/opt/test/claude "$A" l1-argv claude-sonnet-5-5 | tr '\0' '\n' | sed -n '/^--effort$/{n;p;}')" "high" "the generic AUTODREAM_L1_EFFORT is the fallback"
+case "$(AUTODREAM_L1_EFFORT_CLAUDE= AUTODREAM_L1_EFFORT=high CLAUDE_BIN=/opt/test/claude "$A" l1-argv claude-sonnet-5-5 | tr '\0' '\n')" in *--effort*) no "an empty _CLAUDE value drops --effort" ;; *) ok "an empty _CLAUDE value drops --effort" ;; esac
+assert_eq "$(jq -r '.l1_model + " " + .l2_model' "$(dirname "$A")/manifest.json")" "claude-haiku-4-5 claude-opus-5-5" "the manifest pins L1 haiku-4-5 and L2 opus-5-5"
 assert_eq "$(CLAUDE_BIN=/opt/test/claude "$A" engine-bin)" "/opt/test/claude" "engine-bin honors CLAUDE_BIN"
 assert_eq "$(env -u CLAUDE_BIN HOME=/h "$A" engine-bin)" "/h/.local/bin/claude" "engine-bin defaults to the installer's location"
 assert_eq "$("$A" l1-env | tr '\n' ' ')" "CLAUDE_CODE_DISABLE_CLAUDE_MDS=1 DISABLE_TELEMETRY=1 DISABLE_ERROR_REPORTING=1 " "l1-env is the lean-query environment"

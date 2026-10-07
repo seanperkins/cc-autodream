@@ -6,7 +6,7 @@ Operating notes for working on this repo. Read this before changing `bin/run.sh`
 
 A nightly two-layer pipeline that reads yesterday's Claude Code session transcripts and produces a ranked daily report plus a few pinned MEMORY.md entries.
 
-- **Layer 1** (`prompts/SESSION_TRIAGE.md`, sonnet-5-5 at low effort, fanned out one per session): reads one transcript, writes one findings JSON.
+- **Layer 1** (`prompts/SESSION_TRIAGE.md`, `claude-haiku-4-5`, fanned out one per session): reads one transcript, writes one findings JSON.
 - **Layer 2** (`prompts/PROMPT.md`, opus, single call): reads all findings JSONs, writes `dreams/YYYY-MM-DD.md`, optionally pins to project MEMORY.md.
 - `bin/run.sh` orchestrates both layers and everything around them.
 

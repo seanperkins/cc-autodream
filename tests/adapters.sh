@@ -164,7 +164,7 @@ l1counts=$(mktemp "${TMPDIR:-/tmp}/l1model.XXXXXX")
   export ADAPTERS_ROOT="$REPO/adapters"
   . "$REPO/bin/adapters.sh"
   unset AUTODREAM_L1_MODEL AUTODREAM_L1_MODEL_CLAUDE AUTODREAM_L1_MODEL_OMP
-  assert_eq "$(adapter_l1_model claude)" "claude-sonnet-5-5" "the manifest default"
+  assert_eq "$(adapter_l1_model claude)" "claude-haiku-4-5" "the manifest default"
   assert_eq "$(adapter_l1_model omp)" "deepseek/deepseek-flash" "each adapter has its own default"
   AUTODREAM_L1_MODEL=generic/model
   assert_eq "$(adapter_l1_model claude)" "generic/model" "the generic override applies to every adapter"
